@@ -4,7 +4,7 @@ import control
 class LQRController:
     def __init__(self,
                  mass, rod_length, gravity, dt,
-                 action_limits=(-2.0, 2.0),
+                 action_limits:tuple,
                  Q = np.diag([50, 0.5]),
                  R = np.array([[0.2]])):
         """
@@ -47,7 +47,7 @@ class EnergyShapingController:
                  rod_length: float,
                  gravity: float,
                  dt: float,
-                 action_limits: tuple = (-2.0, 2.0)):
+                 action_limits: tuple):
         """
         Energy Shaping Controller for the Pendulum environment.
         See https://underactuated.mit.edu/acrobot.html#section6
