@@ -1,5 +1,10 @@
+import os
+
 import numpy as np
+import pandas as pd
 import control
+import gymnasium as gym
+import time
 
 class LQRController:
     def __init__(self,
@@ -82,3 +87,75 @@ class EnergyShapingController:
         E_err = E - E_d # Energy error.
         u = - kp * state[1] * E_err
         return np.clip(u, a_min=self.action_limits[0], a_max=self.action_limits[1])
+
+def sim(args):
+    env = gym.make(args.env_name)
+
+    pendulum_params = {
+        "mass": env.unwrapped.m,
+        "rod_length": env.unwrapped.l,
+        "gravity": 10.0,
+        "action_limits": (env.action_space.low, env.action_space.high),
+        'dt': env.unwrapped.dt
+    }
+
+    ANGLE_SWITCH_THRESHOLD_DEG = 18
+    EPISODE_DONE_ANGLE_THRESHOLD_DEG = 0.5
+
+    energy_controller = EnergyShapingController(**pendulum_params)
+    lqr_controller = LQRController(**pendulum_params)
+
+    collected_data = []
+    duration_episodes = []
+
+    for i in range(args.num_episodes):
+        obs, _ = env.reset(options={'x_init': np.pi, 'y_init': 8.0})
+        done = False
+        state = obs.squeeze().copy()
+        upright_angle_buffer = []
+        ctrl_type = None
+        time_start_episode = time.time()
+
+        while not done:
+            angle = np.arctan2(obs[1], obs[0])
+            pos_vel = np.array([angle, obs[2]]).squeeze()
+
+            if abs(angle) < np.deg2rad(ANGLE_SWITCH_THRESHOLD_DEG):
+                action = lqr_controller.compute_control(pos_vel)
+                ctrl_type = 'LQR'
+            else:
+                action = energy_controller.get_action(pos_vel)
+                ctrl_type = 'EnergyShaping'
+
+            obs, _, _, _, _ = env.step(action)
+            next_angle = np.arctan2(obs[1], obs[0])
+
+            if (abs(angle) < np.deg2rad(EPISODE_DONE_ANGLE_THRESHOLD_DEG)) and \
+               (abs(next_angle) < np.deg2rad(EPISODE_DONE_ANGLE_THRESHOLD_DEG)):
+                upright_angle_buffer.append(angle)
+            if len(upright_angle_buffer) > 40:
+                done = True
+
+            collected_data.append([
+                i,
+                action.squeeze(),
+                state.tolist(),
+                ctrl_type
+            ])
+            
+            state = obs.squeeze().copy()
+
+        duration_episodes.append(time.time() - time_start_episode)
+
+    env.close()
+    print(f'Total simulation time: {sum(duration_episodes):.2f} s for {args.num_episodes} episodes')
+
+    # Save data
+    col_names = ['episode', 'actions', 'states', 'ctrl_type']
+    df = pd.DataFrame(collected_data, columns=col_names)
+
+    os.makedirs(args.data_dir, exist_ok=True)
+    csv_file_name = f'{args.data_dir}/elqr_{args.num_episodes}_episodes.csv'
+    df.to_csv(csv_file_name, index=False)
+
+    print(f'Data saved at: {csv_file_name}')
