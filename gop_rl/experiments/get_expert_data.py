@@ -16,7 +16,7 @@ def main():
     parser.add_argument("--num_episodes", type=int, default=100, help="Number of episodes to collect.")
     parser.add_argument("--max_steps", type=int, default=200, help="Maximum steps per episode - check gym of episode length.")
     parser.add_argument("--data_dir", type=str, default="data/pendulum", help="Directory to save expert data.")
-    parser.add_argument("--output_dir", type=str, default="outputs/pendulum/elqr", help="Directory to save plots.")
+    parser.add_argument("--output_dir", type=str, default="outputs/pendulum", help="Directory to save plots.")
     parser.add_argument("--action_limit", type=float, default=2.0, help="Action limit for the environment.")
     parser.add_argument("--kp", type=float, default=1.0, help="Proportional gain for the controller.")
     args = parser.parse_args()
