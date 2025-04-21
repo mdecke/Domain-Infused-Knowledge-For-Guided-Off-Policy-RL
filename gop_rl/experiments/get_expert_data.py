@@ -23,10 +23,13 @@ def main():
     args = parser.parse_args()
 
     np.random.seed(args.seed)
-    
+
     os.makedirs(args.output_dir, exist_ok=True)
     os.makedirs(args.data_dir, exist_ok=True)
     
+    if args.env_name == 'Ant-v4':
+        sbl3_ppo.sim(args)
+        print('Videos and data saved.')
     if args.env_name == 'Pendulum-v1':
         elqr.sim(args)
         print('Plotting...')
