@@ -49,7 +49,9 @@ def handle_exploration(exploration_type:str, state_dim:int, action_dim:int, act_
             raise ValueError(f"Unknown exploration type: {exploration_type}")
     return explorator, noise
 
-def augment_data(data:pd.DataFrame, size:int):
+
+
+def augment_data(data:pd.DataFrame):
     data['prev_actions'] = data['actions'].shift(1)
     data['prev_states'] = data['states'].shift(1)
 
@@ -57,27 +59,16 @@ def augment_data(data:pd.DataFrame, size:int):
     data = data[~mask].reset_index(drop=True)
     return data
 
-def data_processor(file_path:str, args:dict):
+
+def data_processor(file_path:str):
     data = pd.read_csv(file_path)
     data['states'] = data['states'].apply(lambda x: ast.literal_eval(x))
     episodes = data['episode'].unique()
-    if args.env_name == 'Pendulum-v1':
-        augmented_data = augment_data(data, size=1)
-        augmented_data['angle_state'] = augmented_data['states'].apply(lambda x: np.arctan2(x[1], x[0]))
-        augmented_data['angle_vel'] = augmented_data['states'].apply(lambda x: x[2])
-        augmented_data['prev_angle_state'] = augmented_data['prev_states'].apply(lambda x: np.arctan2(x[1], x[0]))
-        augmented_data['prev_angle_vel'] = augmented_data['prev_states'].apply(lambda x: x[2])
-    else:
-        if args.env_name == 'Ant-v4':
-            size = 8
-        elif args.env_name == 'Walker2d-v4':
-            size = 6
-        else:
-            raise ValueError(f"Unknown environment: {args.env_name}")
-        augmented_data = augment_data(data, size=size)
-        augmented_data['prev_states'] = augmented_data['prev_states'].apply(lambda x: np.array(x))
-        augmented_data['actions'] = augmented_data['actions'].apply(lambda x: ast.literal_eval(x))
-        augmented_data['prev_actions'] = augmented_data['prev_actions'].apply(lambda x: ast.literal_eval(x))
+    augmented_data = augment_data(data)
+    augmented_data['prev_states'] = augmented_data['prev_states'].apply(lambda x: np.array(x))
+    if isinstance(augmented_data['actions'].iloc[0], str):
+        augmented_data['actions'] = augmented_data['actions'].apply(lambda x: np.array(x))
+        augmented_data['prev_actions'] = augmented_data['prev_actions'].apply(lambda x: np.array(x))
     return augmented_data, episodes
 
 
