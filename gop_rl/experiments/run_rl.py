@@ -42,7 +42,7 @@ def main():
     action_high = env.action_space.high
 
 
-    explorator = handle_exploration(args.exploration, action_dim, action_low, action_high, args.device)
+    explorator, guide = handle_exploration(args.exploration, action_dim, action_low, action_high, args.device)
     print(f"[INFO] Exploration type: {args.exploration}")
     
     seeds = set_seeds(args.seed, args.n_cycles)
@@ -79,7 +79,10 @@ def main():
             else:
                 with torch.no_grad():
                     action = behavior_policy.forward(torch.tensor(obs, dtype=torch.float32, device=args.device))
-                    expl_noise = explorator.sample(action.shape).cpu().numpy()
+                    if guide:
+                        expl_noise = explorator.sample(action.shape).cpu().numpy()
+                    else:
+                        expl_noise = explorator.sample().cpu().numpy()
                 noisy_action = action.cpu().numpy() + expl_noise
                 clipped_action = np.clip(noisy_action, a_min=action_low, a_max=action_high)
 
