@@ -176,6 +176,7 @@ cython_debug/
 
 
 #folder to ignore
+.DS_Store
 data/*
 play*.py
 outputs/*
