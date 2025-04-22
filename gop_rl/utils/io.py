@@ -1,9 +1,6 @@
-import ast
 import torch
-import numpy as np
-import pandas as pd
 from torch.distributions import Normal
-from gop_rl.modeling import mle, cnf
+# from gop_rl.modeling import mle, cnf
 
 
 
@@ -25,10 +22,6 @@ class OrnsteinUhlenbeckNoise:
 
         return self.base_scale * self.state
 
-
-def set_seeds(seed:int, nb_training_cycles:int = 1):
-    np.random.seed(seed)
-    return np.random.randint(0, 2**32 - 1, size=nb_training_cycles )
     
 
 def handle_exploration(exploration_type:str, state_dim:int, action_dim:int, act_lim:float,device:str): #handle different size inputs?
@@ -49,27 +42,6 @@ def handle_exploration(exploration_type:str, state_dim:int, action_dim:int, act_
             raise ValueError(f"Unknown exploration type: {exploration_type}")
     return explorator, noise
 
-
-
-def augment_data(data:pd.DataFrame):
-    data['prev_actions'] = data['actions'].shift(1)
-    data['prev_states'] = data['states'].shift(1)
-
-    mask = data['episode'] != data['episode'].shift(1)
-    data = data[~mask].reset_index(drop=True)
-    return data
-
-
-def data_processor(file_path:str):
-    data = pd.read_csv(file_path)
-    data['states'] = data['states'].apply(lambda x: ast.literal_eval(x))
-    episodes = data['episode'].unique()
-    augmented_data = augment_data(data)
-    augmented_data['prev_states'] = augmented_data['prev_states'].apply(lambda x: np.array(x))
-    if isinstance(augmented_data['actions'].iloc[0], str):
-        augmented_data['actions'] = augmented_data['actions'].apply(lambda x: np.array(x))
-        augmented_data['prev_actions'] = augmented_data['prev_actions'].apply(lambda x: np.array(x))
-    return augmented_data, episodes
 
 
 
