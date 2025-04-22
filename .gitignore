@@ -177,3 +177,5 @@ cython_debug/
 
 #folder to ignore
 data/*
+play*.py
+outputs/*
