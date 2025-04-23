@@ -27,7 +27,7 @@ class OrnsteinUhlenbeckNoise:
 def handle_exploration(exploration_type:str, state_dim:int, action_dim:int, act_lim:float,device:str): #handle different size inputs?
     match exploration_type:
         case 'gaussian':
-            explorator = Normal(loc=0, scale=0.2)
+            explorator = Normal(loc=0, scale=0.1)
             noise = True
         case 'ou':
             explorator = OrnsteinUhlenbeckNoise(theta=0.15, sigma=0.1, base_scale=0.1)
@@ -41,6 +41,9 @@ def handle_exploration(exploration_type:str, state_dim:int, action_dim:int, act_
         case _:
             raise ValueError(f"Unknown exploration type: {exploration_type}")
     return explorator, noise
+
+def handle_input():
+    pass
 
 
 
