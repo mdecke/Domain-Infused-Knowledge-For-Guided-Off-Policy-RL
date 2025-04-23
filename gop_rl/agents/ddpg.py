@@ -52,7 +52,7 @@ class Policy(nn.Module):
 
         self.optimizer = optim.Adam(self.parameters(), policy_lr)
         if type(action_lim) is not torch.Tensor:
-            action_lim = torch.tensor(action_lim, dtype=torch.float32)
+            action_lim = torch.tensor(action_lim, dtype=torch.float32, device=device)
         self.action_lim = action_lim
         self.to(device)
         
@@ -79,13 +79,13 @@ class Value(nn.Module):
         x = functional.relu(self.fc2(x))
         return self.fc3(x).squeeze()
 
-def init_model_weights(model:nn.Module, low=0.0, high=0.1, seed=None):
+def init_model_weights(model:nn.Module, low=0.0, high=0.01, seed=None):
     if seed is not None:
         torch.manual_seed(seed)
     for name, param in model.named_parameters():
         if param.requires_grad:
             if "weight" in name:
-                nn.init.uniform_(param, a=low, std=high)
+                nn.init.uniform_(param, a=low, b=high)
             elif "bias" in name:
                 nn.init.constant_(param, val=low)
 
