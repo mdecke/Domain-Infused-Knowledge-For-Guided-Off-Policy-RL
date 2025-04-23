@@ -148,30 +148,36 @@ def train_model(args,csv_file_path:str):
     test_data = all_data[all_data['episode'].isin(test_episodes)].copy()
 
     processed_train_data, state_mean, state_std, actions_mean, actions_std = data_processor(train_data, args)
-    augmented_val_data, _, _, _, _ = data_processor(val_data, args)
     
+    args.state_mean = state_mean
+    args.state_std = state_std
+    args.actions_mean = actions_mean
+    args.actions_std = actions_std
+    
+    processed_val_data, _, _, _, _ = data_processor(val_data, args)
+    processed_test_data, _, _, _, _ = data_processor(test_data, args, test=True)
     
     env = gym.make(args.env_name)
-    obs_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.shape[0]
+    args.obs_dim = env.observation_space.shape[0]
+    args.act_dim = env.action_space.shape[0]
     action_high = env.action_space.high[0]
 
     if args.input_type == 'state':
         model_name = 'P(a|s)'
-        input_dim = obs_dim
+        input_dim = args.obs_dim
     elif args.input_type == 'state_action':
         model_name = 'P(a|s,a-1)'
-        input_dim = obs_dim + action_dim
+        input_dim = args.obs_dim + args.act_dim
     elif args.input_type == 'prev_state_action':
         model_name = 'P(a|s,a-1,s-1)'
-        input_dim = 2*obs_dim + action_dim
+        input_dim = 2*args.obs_dim + args.act_dim
     elif args.input_type == 'state_prev_state':
         model_name = 'P(a|s,s-1)'
-        input_dim = 2*obs_dim
+        input_dim = 2*args.obs_dim
     else:
         raise ValueError("Invalid input type. Must be 'state', 'state_action' or 'state_prev_state'")
     
-    model = ActionMLE(input_dim, action_dim, action_lim=action_high)
+    model = ActionMLE(input_dim, args.act_dim, action_lim=action_high)
     
     optimizer = optim.Adam(model.parameters(), lr=1e-2)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', 
@@ -180,7 +186,8 @@ def train_model(args,csv_file_path:str):
     early_stopping = EarlyStopping(patience=args.early_stopping, min_delta=0.0, path=expert_model_path)
 
     X_train, Y_train = prepare_data(processed_train_data, args.input_type)
-    X_val, Y_val = prepare_data(augmented_val_data, args.input_type)
+    X_val, Y_val = prepare_data(processed_val_data, args.input_type)
+    X_test, Y_test = prepare_data(processed_test_data, args.input_type)
 
     # Convert to PyTorch tensors
     X_train = torch.tensor(X_train, dtype=torch.float32, device=args.device)
@@ -208,7 +215,7 @@ def train_model(args,csv_file_path:str):
             optimizer.zero_grad()
             mu, log_s = model(x_batch)
             loss = gaussian_nll_loss(mu, log_s, y_batch)
-            mse_loss = nn.MSELoss()(mu, y_batch)
+            mse_loss = nn.MSELoss()(mu, y_batch.view(-1, 1) if args.act_dim == 1 else y_batch)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -226,7 +233,7 @@ def train_model(args,csv_file_path:str):
                 xb, yb = xb.to(args.device), yb.to(args.device)
                 mu, log_s = model(xb)
                 loss = gaussian_nll_loss(mu, log_s, yb)
-                mse_loss = nn.MSELoss()(mu, yb.view(-1, 1) if len(yb.shape) == 1 else yb)
+                mse_loss = nn.MSELoss()(mu, yb.view(-1, 1) if args.act_dim == 1 else yb)
                 total_val_nll += loss.item() * xb.size(0)
                 total_val_mse += mse_loss.item() * xb.size(0)
         avg_val_nll = total_val_nll / len(val_loader.dataset)
@@ -248,14 +255,17 @@ def train_model(args,csv_file_path:str):
 
     # 11) Load best‐model & return
     model.load_state_dict(torch.load(expert_model_path))
-    return model, history
+    return model, history, X_test, Y_test
 
 
 def plot_metrics(history, save_path):
     fig, ax = plt.subplots(1, 2, figsize=(15, 5))
     ax[0].plot(history['train_nll'], label='Train NLL', color='blue', linestyle='--')
     ax[0].plot(history['val_nll'], label='Validation NLL', color='orange', linestyle='-.')
-    ax[0].set_ylim(bottom=-3.5,top=1)   
+    nll_min = min(min(history['train_nll']), min(history['val_nll']))
+    nll_max = max(max(history['train_nll']), max(history['val_nll']))
+    y_padding = (nll_max - nll_min) * 0.05  # 5% padding
+    ax[0].set_ylim(bottom=nll_min-y_padding, top=nll_max+y_padding)
     ax[0].set_xlabel('Epochs')
     ax[0].set_ylabel('Negative Log Likelihood')
     ax[0].set_title('Training and Validation NLL')
@@ -270,25 +280,82 @@ def plot_metrics(history, save_path):
     plt.savefig(save_path)
     plt.close()
 
-def test_model(model, test_data, test_labels,args):
+def test_model(model, raw_states: np.ndarray, raw_actions: np.ndarray, args):
     model.eval()
-    with torch.no_grad():
-        sampled_actions, mu, log_s= model.sample(test_data)
-        mu = mu.cpu().numpy()
-        sampled_actions = sampled_actions.cpu().numpy().flatten()
-        nll = gaussian_nll_loss(mu, log_s, test_labels).item()
-        mse = nn.MSELoss()(mu, test_labels).item()
+    if args.input_type == 'state':
+        states_std = (raw_states - args.state_mean) / args.state_std
+    elif args.input_type == 'state_action':
+        current_states_std = (raw_states[:,:args.obs_dim] - args.state_mean) / args.state_std
+        prev_action_std = (raw_states[:,args.obs_dim:] - args.actions_mean) / args.actions_std
+        states_std = np.concatenate([current_states_std, prev_action_std], axis=1)
+    elif args.input_type == 'prev_state_action':
+        current_states_std = (raw_states[:,:args.obs_dim] - args.state_mean) / args.state_std
+        prev_action_std = (raw_states[:,args.obs_dim:args.obs_dim+args.act_dim] - args.actions_mean) / args.actions_std
+        prev_state_std = (raw_states[:,args.obs_dim+args.act_dim:] - args.state_mean) / args.state_std
+        states_std = np.concatenate([current_states_std, prev_action_std, prev_state_std], axis=1)
+    elif args.input_type == 'state_prev_state':
+        current_states_std = (raw_states[:,:args.obs_dim] - args.state_mean) / args.state_std
+        prev_state_std = (raw_states[:,args.obs_dim:] - args.state_mean) / args.state_std
+        states_std = np.concatenate([current_states_std, prev_state_std], axis=1)
+    else:
+        raise ValueError("Invalid input type. Must be 'state', 'state_action' or 'state_prev_state'")
 
-    # Plot
-    fig = plt.figure(figsize=(10,10))
-    ax = fig.add_subplot(111, projection='3d')
-    ax.scatter(test_data[:, 0], test_data[:, 1], sampled_actions, color='blue', label='True')
-    ax.scatter(test_data[:, 0], test_data[:, 1], test_labels, marker='x', color='red', label='Pred')
-    ax.set_xlabel('Theta')
-    ax.set_ylabel('Theta_dot')
-    ax.set_zlabel('Action')
-    ax.set_title(f'MLE Model of {args.input_type} -  Prediction vs True Actions - Test Set')
-    plt.legend(loc='best')
+    with torch.no_grad():
+        model_input = torch.from_numpy(states_std).float().to(args.device)
+        sampled_action, mean_action, log_s = model.sample(model_input)
+        mean_action = mean_action.cpu().numpy()
+        sampled_action = sampled_action.cpu().numpy()
+        log_s = log_s.cpu().numpy()
+
+    nll = gaussian_nll_loss(
+        torch.from_numpy(mean_action),
+        torch.from_numpy(log_s),
+        torch.from_numpy(raw_actions)
+    ).item()
+    mse = nn.MSELoss()(
+        torch.from_numpy(mean_action),
+        torch.from_numpy(raw_actions).view(-1, 1) if args.act_dim == 1 else torch.from_numpy(raw_actions)
+    ).item()
+
+    
+    # for Pendulum-v1: raw_states[:,0]=cosθ, raw_states[:,1]=sinθ
+    if args.env_name == 'Pendulum-v1':
+        fig = plt.figure(figsize=(10,10))
+        ax = fig.add_subplot(111, projection='3d')
+        angles = np.arctan2(raw_states[:,1], raw_states[:,0])
+        angle_vels = raw_states[:,2]
+        ax.scatter(angles,angle_vels, raw_actions.flatten(),
+                color='blue', marker='o', label='True Actions', alpha=0.5)
+        ax.scatter(angles, angle_vels, mean_action.flatten(),
+                color='red',  marker='x', label='Predicted Mean Actions', alpha=0.6)
+        ax.set_xlabel('State dim 0 (raw)')
+        ax.set_ylabel('State dim 1 (raw)')
+        ax.set_zlabel('Action')
+        ax.set_title(f'{args.input_type} MLE: Pred vs True on test set')
+        ax.legend(loc='best')
+    else:
+        action_dim = raw_actions.shape[1]
+        n_row = int(np.ceil(action_dim/2))
+        fig, ax = plt.subplots(nrows=n_row, ncols=2, figsize=(10,10))
+        ax = ax.flatten()
+
+        for i in range(action_dim):
+            ax[i].scatter(raw_actions[:,i], mean_action[:,i], marker='x', color='red', label='Predicted Mean Actions', alpha=0.6)
+            ax[i].set_xlabel(f'true action dim{i}')
+            ax[i].set_ylabel(f'predicted action dim {i}')
+            ax[i].grid(True)
+            x_min, x_max = ax[i].get_xlim()
+            x=np.linspace(x_min,x_max,100)
+            ax[i].plot(x,x,color='k',label='x=y')
+            ax[i].legend(loc='best')
+    
+    plt.tight_layout()
     plt.savefig(f'{args.output_dir}/{args.input_type}_mle_fit.svg')
     plt.show()
+
     return nll, mse
+
+def eval_rollout(model, env, args, test_data):
+    pass
+
+    

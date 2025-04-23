@@ -39,8 +39,10 @@ def main():
     
 
     if args.model_type == 'mle':
-        _,history = mle.train_model(args,csv_file_name)
-        mle.plot_metrics(history, f'{args.output_dir}/{args.input_type}_mle_metrics.png')
+        model,history,test_inputs_np, test_labels_np= mle.train_model(args,csv_file_name)
+        mle.plot_metrics(history, f'{args.output_dir}/{args.input_type}_mle_metrics.svg')
+        test_nll, test_mse = mle.test_model(model,raw_states=test_inputs_np, raw_actions=test_labels_np,args=args)
+        print(f'[INFO] Test NLL: {test_nll:.4f}, Test MSE: {test_mse:.4f}')
     elif args.model_type == 'cnf':
         cnf.train_model(args,csv_file_name)
     else:

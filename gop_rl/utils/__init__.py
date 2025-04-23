@@ -16,7 +16,7 @@ def augment_data(data:pd.DataFrame):
     return data
 
 
-def data_processor(data:Union[str, pd.DataFrame], args:dict):
+def data_processor(data:Union[str, pd.DataFrame], args:dict, test:bool=False):
     if isinstance(data, str):
         df = pd.read_csv(data)
     elif isinstance(data, pd.DataFrame):
@@ -31,54 +31,31 @@ def data_processor(data:Union[str, pd.DataFrame], args:dict):
     else:
         actions_mat = np.array(df['actions'])
     df['targets'] = df['actions'].copy()
+    if test:
+        return augment_data(df), None, None, None, None
     state_mean, state_std = None, None
     actions_mean, actions_std = None, None
     if args.standardize:
-        state_mat = np.stack(df['states'].to_numpy())
-        state_mean = state_mat.mean(axis=0)
-        state_std  = state_mat.std(axis=0) + 1e-8
+        if hasattr(args, 'state_mean') and args.state_mean is not None:
+            state_mean = args.state_mean
+            state_std  = args.state_std
+        else:
+            state_mat = np.stack(df['states'].to_numpy())
+            state_mean = state_mat.mean(axis=0)
+            state_std  = state_mat.std(axis=0) + 1e-8
         df['states'] = df['states'].apply(lambda x: (x - state_mean) / state_std)
-        actions_mean = actions_mat.mean(axis=0)
-        actions_std  = actions_mat.std(axis=0) + 1e-8
+
+        if hasattr(args, 'actions_mean') and args.actions_mean is not None:
+            actions_mean = args.actions_mean
+            actions_std  = args.actions_std
+        else:
+            actions_mean = actions_mat.mean(axis=0)
+            actions_std  = actions_mat.std(axis=0) + 1e-8  
         df['actions'] = df['actions'].apply(lambda x: (x - actions_mean) / actions_std)
     
     augmented_data = augment_data(df)
     # augmented_data['prev_states'] = augmented_data['prev_states'].apply(lambda x: np.array(x))
     return augmented_data, state_mean, state_std, actions_mean, actions_std
-
-
-class RunningStandardizer:
-    def __init__(self):
-        self.count = 0
-        self.mean = 0
-        self.M2 = 0  # For calculating variance
-        
-    def update(self, x):
-        # If x is multi-dimensional, flatten it
-        if hasattr(x, 'shape') and len(x.shape) > 1:
-            x = x.flatten()
-        
-        # For each value in x
-        for val in x:
-            self.count += 1
-            delta = val - self.mean
-            self.mean += delta / self.count
-            delta2 = val - self.mean
-            self.M2 += delta * delta2
-    
-    def standardize(self, x):
-        if self.count < 2:
-            return np.zeros_like(x)
-        
-        # Calculate standard deviation
-        variance = self.M2 / self.count
-        std = np.sqrt(variance)
-        
-        # Avoid division by zero
-        if std == 0:
-            return np.zeros_like(x)
-        
-        return (x - self.mean) / std
     
 def prepare_data(processed_data:pd.DataFrame, input_type:str):
     """Prepare inputs and targets for model training based on input type"""
