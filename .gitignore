@@ -177,6 +177,10 @@ cython_debug/
 
 #folder to ignore
 .DS_Store
-data/*
+data/
 play*.py
 outputs/*
+
+!data/ant/
+!data/ant/ppo_best_model.zip
+!data/ant/ppo_vecnormalize.pkl
