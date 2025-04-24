@@ -13,27 +13,33 @@ from gop_rl.utils import data_processor, prepare_data
 from gop_rl.modeling import EarlyStopping
 
 class ConditionalBase(nn.Module):
-    def __init__(self, condition_dim, latent_dim):
+    def __init__(self, condition_dim, latent_dim, action_lim=1.0):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(condition_dim, 256),
-            nn.Tanh(),
-            nn.BatchNorm1d(256),
-            nn.Linear(256, 256),
-            nn.Tanh(),
-            nn.BatchNorm1d(256),
-            nn.Linear(256, 64),
-            nn.Tanh(),
-            nn.BatchNorm1d(64),
-            nn.Linear(64, 2*latent_dim)    
-        )
+        if type(action_lim) is not torch.Tensor:
+            action_lim = torch.tensor(action_lim, dtype=torch.float32)
+        self.action_lim = action_lim
+        
+        self.fc = nn.Sequential(nn.Linear(condition_dim, 256),
+                                nn.LayerNorm(256),
+                                nn.SiLU(),
+                                nn.Dropout(0.15),
+
+                                nn.Linear(256, 256),
+                                nn.LayerNorm(256),
+                                nn.SiLU(),
+                                nn.Dropout(0.15),
+
+                                nn.Linear(256, 64),
+                                nn.LayerNorm(64),
+                                nn.SiLU())
+        self.mu_head = nn.Linear(64, latent_dim)
+        self.log_sigma_head = nn.Linear(64, latent_dim)
     
     def forward(self, condition):
-        params = self.net(condition)
-        latent_dim = params.shape[1] // 2
-        mean = params[:, :latent_dim]
-        log_std = params[:, latent_dim:]
-        return mean, log_std
+        logits = self.fc(condition)
+        mu = self.action_lim * torch.tanh(self.mu_head(logits))
+        log_sigma = torch.clamp(self.log_sigma_head(logits), min=-3.0, max=3.0)
+        return mu, log_sigma
     
 
 class ConditionalAffineLayer(nn.Module):
@@ -42,13 +48,13 @@ class ConditionalAffineLayer(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(condition_dim, 256),
             nn.Tanh(),
-            nn.BatchNorm1d(256),
+            nn.LayerNorm(256),
             nn.Linear(256, 256),
             nn.Tanh(),
-            nn.BatchNorm1d(256),
+            nn.LayerNorm(256),
             nn.Linear(256, 64),
             nn.Tanh(),
-            nn.BatchNorm1d(64),
+            nn.LayerNorm(64),
             nn.Linear(64, 2)    
         )
     
@@ -73,11 +79,11 @@ class ConditionalAffineLayer(nn.Module):
         return a, log_det
     
 class ConditionalNormalizingFlow(nn.Module):
-    def __init__(self, condition_dim, n_flows, latent_dim=1):
+    def __init__(self, condition_dim, n_flows, latent_dim=1, action_lim=1.0):
         super().__init__()
         self.n_flows = n_flows
         self.layers = nn.ModuleList([ConditionalAffineLayer(condition_dim) for _ in range(n_flows)])
-        self.conditional_base = ConditionalBase(condition_dim, latent_dim)
+        self.conditional_base = ConditionalBase(condition_dim, latent_dim, action_lim)
     
     def forward(self, a, condition):
         # Map action a to latent variable z.
@@ -192,8 +198,8 @@ def train(args:dict,file_name:str):
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=train_loader.batch_size, shuffle=False)
 
-    model = ConditionalNormalizingFlow(condition_dim=input_dim, n_flows=args.n_flows, latent_dim=args.act_dim)
-    optimizer = optim.Adam(model.parameters(), lr=1e-2, weight_decay=1e-4)
+    model = ConditionalNormalizingFlow(condition_dim=input_dim, n_flows=args.n_flows, latent_dim=args.act_dim, action_lim=action_high)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
                                                      factor=0.5, patience=5,)
     expert_model_path = os.path.join(args.data_dir, f'{args.model_type}',f'{args.input_type}_{args.cycle}.pth')
@@ -209,12 +215,13 @@ def train(args:dict,file_name:str):
         for input_batch, actions_batch in train_loader:
             input_batch = input_batch.to(args.device)
             actions_batch = actions_batch.to(args.device)
-
+            # print('nb uodates til nan')
             optimizer.zero_grad()
             # Compute negative log likelihood.
             log_prob = model.log_prob(actions_batch, input_batch)
             loss = -log_prob.mean()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             tot_nll += loss.item() * actions_batch.size(0)
             with torch.no_grad():
@@ -268,7 +275,7 @@ def plot_metrics(train_losses, val_losses, args):
     plt.plot(epochs, tr_mse, '--', label='train_mse')
     plt.plot(epochs, vl_mse, '-.', label='val_mse')
     plt.legend(); plt.title('MSE')
-    plt.savefig(f"{args.output_dir}/{args.model_type}/{args.input_type}_metrics_cycle{args.cycle}.svg")
+    plt.savefig(f"{args.output_dir}/{args.model_type}/{args.input_type}_metrics_cycle_{args.cycle}.svg")
     plt.close()
 
 
@@ -329,7 +336,7 @@ def test_model(model, raw_states, raw_actions, args):
             axes[j].axis('off')
 
     plt.tight_layout()
-    plt.savefig(f"{args.output_dir}/{args.model_type}/{args.input_type}_fit_cycle{args.cycle}.svg")
+    plt.savefig(f"{args.output_dir}/{args.model_type}/{args.input_type}_fit_cycle_{args.cycle}.svg")
     plt.close()
 
     return test_nll, test_mse

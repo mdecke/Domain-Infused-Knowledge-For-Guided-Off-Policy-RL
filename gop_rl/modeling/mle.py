@@ -235,7 +235,7 @@ def train(args,csv_file_path:str):
     return model, history, X_test, y_test
 
 
-def plot_metrics(history, save_path):
+def plot_metrics(history,args):
     fig, ax = plt.subplots(1, 2, figsize=(15, 5))
     ax[0].plot(history['train_nll'], label='Train NLL', color='blue', linestyle='--')
     ax[0].plot(history['val_nll'], label='Validation NLL', color='orange', linestyle='-.')
@@ -254,7 +254,7 @@ def plot_metrics(history, save_path):
     ax[1].set_title('Training and Validation MSE for Mean Action Prediction')
     ax[1].legend()
     
-    plt.savefig(save_path)
+    plt.savefig(f'{args.output_dir}/{args.model_type}/{args.input_type}_metrics_cycle_{args.cycle}.svg')
     plt.close()
 
 def test_model(model, raw_states: np.ndarray, raw_actions: np.ndarray, args):
@@ -318,7 +318,7 @@ def test_model(model, raw_states: np.ndarray, raw_actions: np.ndarray, args):
             ax[i].legend(loc='best')
     
     plt.tight_layout()
-    plt.savefig(f'{args.output_dir}/{args.input_type}_mle_fit_{args.cycle}.svg')
+    plt.savefig(f'{args.output_dir}/{args.model_type}/{args.input_type}_fit_cycle_{args.cycle}.svg')
     plt.close()
 
 
