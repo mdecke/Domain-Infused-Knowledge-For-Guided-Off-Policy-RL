@@ -135,11 +135,12 @@ def sim(args):
                 upright_angle_buffer.append(angle)
             if len(upright_angle_buffer) > 40:
                 done = True
-
+            # save_state = np.array([pos_vel[0],pos_vel[1]])
+            # save_next_state = np.array([next_angle, obs[2]])
             collected_data.append([
                 i,
                 action.squeeze(),
-                state.tolist(),
+                pos_vel.tolist(),
                 ctrl_type
             ])
             
