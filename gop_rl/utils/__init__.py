@@ -8,63 +8,23 @@ def set_seeds(seed:int, nb_training_cycles:int = 1):
     return np.random.randint(0, 2**32 - 1, size=nb_training_cycles )
 
 def augment_data(data:pd.DataFrame):
-    data['prev_actions'] = data['actions'].shift(1)
-    data['prev_states'] = data['states'].shift(1)
+    data['prev_actions'] = data['actions'].shift(1, fill_value=0)
+    data['prev_states'] = data['states'].shift(1, fill_value=0)
 
     mask = data['episode'] != data['episode'].shift(1)
     data = data[~mask].reset_index(drop=True)
     return data
 
 
-def data_processor(data:Union[str, pd.DataFrame], args:dict, test:bool=False):
-    if isinstance(data, str):
-        df = pd.read_csv(data)
-    elif isinstance(data, pd.DataFrame):
-        df = data
-    else:
-        raise ValueError("Data must be a file path or a pandas DataFrame.")
-    df['states'] = df['states'].apply(lambda x: ast.literal_eval(x))
-    
-    if isinstance(df['actions'].iloc[0], str):
-        df['actions'] = df['actions'].apply(lambda x: ast.literal_eval(x))
-        actions_mat = np.stack(df['actions'].to_numpy())
-    else:
-        actions_mat = np.array(df['actions'])
-    df['targets'] = df['actions'].copy()
-    if test:
-        return augment_data(df), None, None, None, None
-    state_mean, state_std = None, None
-    actions_mean, actions_std = None, None
-    if args.standardize:
-        if hasattr(args, 'state_mean') and args.state_mean is not None:
-            state_mean = args.state_mean
-            state_std  = args.state_std
-        else:
-            state_mat = np.stack(df['states'].to_numpy())
-            state_mean = state_mat.mean(axis=0)
-            state_std  = state_mat.std(axis=0) + 1e-8
-        df['states'] = df['states'].apply(lambda x: (x - state_mean) / state_std)
-
-        if hasattr(args, 'actions_mean') and args.actions_mean is not None:
-            actions_mean = args.actions_mean
-            actions_std  = args.actions_std
-        else:
-            actions_mean = actions_mat.mean(axis=0)
-            actions_std  = actions_mat.std(axis=0) + 1e-8  
-        df['actions'] = df['actions'].apply(lambda x: (x - actions_mean) / actions_std)
-    
-    augmented_data = augment_data(df)
-    # augmented_data['prev_states'] = augmented_data['prev_states'].apply(lambda x: np.array(x))
-    return augmented_data, state_mean, state_std, actions_mean, actions_std
-    
 def prepare_data(processed_data:pd.DataFrame, input_type:str):
     """Prepare inputs and targets for model training based on input type"""
     inputs = []
     targets = []
     
     for _, row in processed_data.iterrows():
+        
         state = np.array(row.states, dtype=np.float32)
-        action = np.array(row.targets, dtype=np.float32)
+        target = np.array(row.targets, dtype=np.float32)
         
         if input_type == 'state':
             x = state
@@ -82,6 +42,67 @@ def prepare_data(processed_data:pd.DataFrame, input_type:str):
             raise ValueError("Invalid input type. Choose from 'state', 'state_action', 'prev_state_action', or 'state_prev_state'.")
         
         inputs.append(x)
-        targets.append(action)
-    
+        targets.append(target)
     return np.stack(inputs), np.stack(targets)
+
+
+def data_processor(data:Union[str, pd.DataFrame], args:dict, test:bool=False):
+    if isinstance(data, str):
+        df = pd.read_csv(data)
+    elif isinstance(data, pd.DataFrame):
+        df = data
+    else:
+        raise ValueError("Data must be a file path or a pandas DataFrame.")
+    
+    if isinstance(df['states'].iloc[0], str):
+        try:
+            df['states'] = df['states'].apply(lambda x: ast.literal_eval(x))
+        except (ValueError, SyntaxError) as e:
+            print(f"Error parsing states: {e}")
+            print(f"Sample state string: {df['states'].iloc[0]}")
+            raise
+
+    if isinstance(df['actions'].iloc[0], str):
+        try:
+            df['actions'] = df['actions'].apply(lambda x: ast.literal_eval(x) if '[' in x else float(x))
+            actions_mat = np.stack([np.array([a]) if isinstance(a, (int, float)) else np.array(a) for a in df['actions']])
+        except (ValueError, SyntaxError) as e:
+            print(f"Error parsing actions: {e}")
+            print(f"Sample action string: {df['actions'].iloc[0]}")
+            raise
+    else:
+        actions_mat = np.array(df['actions']).reshape(-1, 1)  # Ensure 2D
+    
+    df['targets'] = df['actions'].copy()
+    
+    if test:
+        return augment_data(df), None, None, None, None
+    
+    state_mean, state_std = None, None
+    actions_mean, actions_std = None, None
+    
+    if args.standardize:
+        if hasattr(args, 'state_mean') and args.state_mean is not None:
+            state_mean = args.state_mean
+            state_std  = args.state_std
+        else:
+            state_mat = np.stack([np.array(s) for s in df['states'].to_numpy()])
+            state_mean = state_mat.mean(axis=0)
+            state_std  = state_mat.std(axis=0) + 1e-8
+        
+        df['states'] = df['states'].apply(lambda x: (np.array(x) - state_mean) / state_std)
+
+        if hasattr(args, 'actions_mean') and args.actions_mean is not None:
+            actions_mean = args.actions_mean
+            actions_std  = args.actions_std
+        else:
+            actions_mean = actions_mat.mean(axis=0)
+            actions_std  = actions_mat.std(axis=0) + 1e-8
+        
+        df['actions'] = df['actions'].apply(
+            lambda x: (x - actions_mean) / actions_std if isinstance(x, (int, float))
+            else (np.array(x) - actions_mean) / actions_std
+        )
+    
+    augmented_data = augment_data(df)
+    return augmented_data, state_mean, state_std, actions_mean, actions_std

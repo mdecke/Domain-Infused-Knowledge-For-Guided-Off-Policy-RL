@@ -173,7 +173,7 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-
+*.pth
 
 #folder to ignore
 .DS_Store
@@ -183,3 +183,5 @@ outputs/*
 data/pendulum/*
 data/ant/*.pth
 data/ant/*.csv
+
+rollout_comp.py

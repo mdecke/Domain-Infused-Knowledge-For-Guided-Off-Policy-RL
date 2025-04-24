@@ -1,5 +1,7 @@
 import torch
 from torch.distributions import Normal
+import pandas as pd
+import numpy as np
 # from gop_rl.modeling import mle, cnf
 
 
@@ -24,8 +26,8 @@ class OrnsteinUhlenbeckNoise:
 
     
 
-def handle_exploration(exploration_type:str, state_dim:int, action_dim:int, act_lim:float,device:str): #handle different size inputs?
-    match exploration_type:
+def handle_exploration(args): #handle different size inputs?
+    match args.exploration_type:
         case 'gaussian':
             explorator = Normal(loc=0, scale=0.1)
             noise = True
@@ -33,18 +35,21 @@ def handle_exploration(exploration_type:str, state_dim:int, action_dim:int, act_
             explorator = OrnsteinUhlenbeckNoise(theta=0.15, sigma=0.1, base_scale=0.1)
             noise = True
         case 'mle':
-            explorator = mle.MLE(state_dim=state_dim, action_dim=action_dim, act_lim=act_lim).to(device)
+            explorator = mle.MLE(state_dim=args.state_dim, action_dim=args.action_dim, act_lim=args.act_lim).to(args.device)
             noise = False
         case 'cnf':
-            explorator = cnf.CNF(state_dim=state_dim, action_dim=action_dim, act_lim=act_lim).to(device)
+            explorator = cnf.CNF(state_dim=args.state_dim, action_dim=args.action_dim, act_lim=args.act_lim).to(args.device)
             noise = False
         case _:
-            raise ValueError(f"Unknown exploration type: {exploration_type}")
+            raise ValueError(f"Unknown exploration type: {args.exploration_type}, must be 'gaussian', 'ou', 'mle' or 'cnf'")
     return explorator, noise
 
 def handle_input():
     pass
 
+def make_episode_batches(df:pd.DataFrame, batch_size:int, train_episodes:np.ndarray) -> list:
+    episode_batch = np.random.choice(train_episodes, size=batch_size, replace=False)
+    pass
 
 
 

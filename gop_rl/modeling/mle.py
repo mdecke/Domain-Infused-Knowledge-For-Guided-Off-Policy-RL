@@ -1,4 +1,5 @@
 import os
+import random
 
 import numpy as np
 import torch
@@ -12,6 +13,9 @@ import pandas as pd
 import gymnasium as gym
 
 from gop_rl.utils import data_processor, prepare_data
+
+import random
+from collections import defaultdict
 
 
 class EarlyStopping:
@@ -39,46 +43,6 @@ class EarlyStopping:
     def save_checkpoint(self, model):
         torch.save(model.state_dict(), self.path)
 
-
-# class ActionMLE(nn.Module):
-#     def __init__(self, state_dim:int, action_dim:int,action_lim:float=2.0):
-#         super(ActionMLE, self).__init__()
-        
-#         self.state_dim = state_dim
-#         self.action_dim = action_dim
-
-#         if type(action_lim) is not torch.Tensor:
-#             action_lim = torch.tensor(action_lim, dtype=torch.float32)
-#         self.action_lim = action_lim
-        
-#         self.fc = nn.Sequential(
-#             nn.Linear(state_dim, 128),
-#             nn.GELU(),
-#             nn.Linear(128, 256),
-#             nn.LayerNorm(256),
-#             nn.GELU(),
-#             nn.Linear(256, 128),
-#             nn.GELU(),
-#             nn.Linear(128, 32),
-#             nn.GELU()
-#         )
-#         self.mu_head = nn.Linear(32, action_dim)
-#         self.log_sigma_head = nn.Linear(32, action_dim)  
-
-    
-#     def forward(self, model_input:torch.Tensor):
-#         x = self.fc(model_input)
-#         mu = self.action_lim * torch.tanh(self.mu_head(x))
-#         log_sigma = self.log_sigma_head(x)
-#         return mu, log_sigma
-    
-#     def sample(self, state:torch.Tensor): 
-#         mu, log_sigma = self.forward(state)
-#         sigma = torch.exp(log_sigma) + 1e-9  # Ensure sigma is positive
-#         dist = torch.distributions.Normal(mu, sigma)
-#         action = dist.sample()
-#         return action, mu, log_sigma
-
 class ActionMLE(nn.Module):
     def __init__(self, state_dim, action_dim, action_lim=2.0):
         super(ActionMLE, self).__init__()
@@ -87,23 +51,26 @@ class ActionMLE(nn.Module):
             action_lim = torch.tensor(action_lim, dtype=torch.float32)
         self.action_lim = action_lim
         
-        self.fc = nn.Sequential(
-            nn.Linear(state_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, 256),
-            nn.ReLU(),
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Linear(128, 32),
-            nn.ReLU()
-        )
-        self.mu_head = nn.Linear(32, action_dim)
-        self.log_sigma_head = nn.Linear(32, action_dim)  
+        self.fc = nn.Sequential(nn.Linear(state_dim, 256),
+                                nn.BatchNorm1d(256),
+                                nn.SiLU(),
+                                nn.Dropout(0.15),
+
+                                nn.Linear(256, 256),
+                                nn.BatchNorm1d(256),
+                                nn.SiLU(),
+                                nn.Dropout(0.15),
+
+                                nn.Linear(256, 64),
+                                nn.BatchNorm1d(64),
+                                nn.SiLU())
+        self.mu_head = nn.Linear(64, action_dim)
+        self.log_sigma_head = nn.Linear(64, action_dim)  
 
     def forward(self, state):
         x = self.fc(state)
-        mu = self.mu_head(x)
-        log_sigma = self.log_sigma_head(x)
+        mu = self.action_lim*torch.tanh(self.mu_head(x))
+        log_sigma = torch.clamp(self.log_sigma_head(x), min=-3.0, max=3.0)
         return mu, log_sigma
     
     def sample(self, state):
@@ -114,7 +81,7 @@ class ActionMLE(nn.Module):
         return action, mu, log_sigma
 
 
-def gaussian_nll_loss(mu:torch.Tensor, log_std:torch.Tensor, target:torch.Tensor):
+def gaussian_reg_nll_loss(mu:torch.Tensor, log_std:torch.Tensor, target:torch.Tensor):
     std = torch.exp(log_std)
     variance = std ** 2
     log_variance = 2 * log_std
@@ -124,11 +91,22 @@ def gaussian_nll_loss(mu:torch.Tensor, log_std:torch.Tensor, target:torch.Tensor
         ((target - mu) ** 2) / variance + 
         torch.log(2 * torch.tensor(np.pi))
     )
-    return nll.mean()
+    var_reg = 1e-4 * (torch.exp(-log_std)).mean()
+    return nll.mean() + var_reg
+
 
 
 def train_model(args,csv_file_path:str):
     
+    dummy_env = gym.make(args.env_name)
+    args.obs_dim = dummy_env.observation_space.shape[0]
+    args.act_dim = dummy_env.action_space.shape[0]
+    action_high = dummy_env.action_space.high[0]
+    dummy_env.close()
+
+    if args.env_name == 'Pendulum-v1':
+        args.obs_dim = 2
+
     all_data = pd.read_csv(csv_file_path)
     episodes = all_data['episode'].unique()
 
@@ -136,8 +114,8 @@ def train_model(args,csv_file_path:str):
     np.random.seed(args.seed if hasattr(args, 'seed') else 42)  # Set seed for reproducibility
     np.random.shuffle(episodes_array)
     
-    split_train_idx = int(len(episodes) * 0.8)
-    split_val_idx = split_train_idx + int(len(episodes) * 0.1)
+    split_train_idx = int(len(episodes) * 0.7)
+    split_val_idx = split_train_idx + int(len(episodes) * 0.15)
     
     train_episodes = episodes_array[:split_train_idx]
     val_episodes = episodes_array[split_train_idx:split_val_idx]
@@ -154,108 +132,137 @@ def train_model(args,csv_file_path:str):
     args.actions_mean = actions_mean
     args.actions_std = actions_std
     
-    processed_val_data, _, _, _, _ = data_processor(val_data, args)
-    processed_test_data, _, _, _, _ = data_processor(test_data, args, test=True)
+    processed_val_data, *_ = data_processor(val_data, args)
+    processed_test_data, *_ = data_processor(test_data, args, test=True)
     
-    env = gym.make(args.env_name)
-    args.obs_dim = env.observation_space.shape[0]
-    args.act_dim = env.action_space.shape[0]
-    action_high = env.action_space.high[0]
 
-    if args.input_type == 'state':
-        model_name = 'P(a|s)'
-        input_dim = args.obs_dim
-    elif args.input_type == 'state_action':
-        model_name = 'P(a|s,a-1)'
-        input_dim = args.obs_dim + args.act_dim
-    elif args.input_type == 'prev_state_action':
-        model_name = 'P(a|s,a-1,s-1)'
-        input_dim = 2*args.obs_dim + args.act_dim
-    elif args.input_type == 'state_prev_state':
-        model_name = 'P(a|s,s-1)'
-        input_dim = 2*args.obs_dim
-    else:
-        raise ValueError("Invalid input type. Must be 'state', 'state_action' or 'state_prev_state'")
+    if args.input_type == 'state':                  input_dim = args.obs_dim
+    elif args.input_type == 'state_action':         input_dim = args.obs_dim + args.act_dim
+    elif args.input_type == 'prev_state_action':    input_dim = 2*args.obs_dim + args.act_dim
+    elif args.input_type == 'state_prev_state':     input_dim = 2*args.obs_dim
+    else: raise ValueError("Invalid input type. Must be 'state', 'state_action' or 'state_prev_state'")
     
     model = ActionMLE(input_dim, args.act_dim, action_lim=action_high)
     
-    optimizer = optim.Adam(model.parameters(), lr=1e-2)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', 
-                                                   factor=0.5, patience=5,)
-    expert_model_path = os.path.join(args.data_dir, f'{args.model_type}_{model_name}.pth')
-    early_stopping = EarlyStopping(patience=args.early_stopping, min_delta=0.0, path=expert_model_path)
+    optimizer = optim.Adam(model.parameters(), lr=1e-2, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
+                                                     factor=0.5, patience=5,)
+    expert_model_path = os.path.join(args.data_dir, f'{args.model_type}',f'{args.input_type}_{args.cycle}.pth')
+    early_stopping = EarlyStopping(patience=args.early_stopping,min_delta=0.0, path=expert_model_path)
 
-    X_train, Y_train = prepare_data(processed_train_data, args.input_type)
-    X_val, Y_val = prepare_data(processed_val_data, args.input_type)
-    X_test, Y_test = prepare_data(processed_test_data, args.input_type)
+    
+    def process_batch(episodes_subset, data):
+        batch_nll = 0.0
+        batch_mse = 0.0
+        for _ in range(args.nb_traj):
+            ep = np.random.choice(episodes_subset)
+            df = data[data['episode'] == ep]
 
-    # Convert to PyTorch tensors
-    X_train = torch.tensor(X_train, dtype=torch.float32, device=args.device)
-    Y_train = torch.tensor(Y_train, dtype=torch.float32, device=args.device)
-    X_val = torch.tensor(X_val, dtype=torch.float32, device=args.device)
-    Y_val = torch.tensor(Y_val, dtype=torch.float32, device=args.device)
+            states = df['states'].to_numpy()
+            states = [np.array(s, dtype=np.float32) for s in states]
+            states = np.stack(states)
 
-    train_ds = TensorDataset(X_train, Y_train)
-    val_ds = TensorDataset(X_val, Y_val)
+            previous_actions = df['prev_actions'].to_numpy()
+            if args.standardize:
+                previous_actions = [np.array(a, dtype=np.float32) for a in previous_actions]
+                previous_actions = np.stack(previous_actions)
+                
+            prev_states = df['prev_states'].to_numpy()
+            prev_states = [np.array(s, dtype=np.float32) for s in states]
+            prev_states = np.stack(states)
+            
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size,
-                              shuffle=True, drop_last=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size,
-                            shuffle=False)
+            batch_states = torch.tensor(states, dtype=torch.float32, device=args.device)
+            targets = df['targets'].to_numpy()
+            
+            if args.env_name == 'Pendulum-v1':
+                labels = torch.tensor(targets, dtype=torch.float32, device=args.device).reshape(-1, 1)
+                previous_actions.reshape(-1, 1)
+            else:
+                targets = [np.array(t, dtype=np.float32) for t in targets]
+                targets = np.stack(targets)
+                labels = torch.tensor(targets, dtype=torch.float32, device=args.device)
 
-    history = {'train_nll': [], 'val_nll': [], 'train_mse': [], 'val_mse': []}
+            if args.input_type == 'state':
+                model_input = batch_states
+            elif args.input_type == 'state_action':
+                batch_previous_actions = torch.tensor(previous_actions, dtype=torch.float32)
+                model_input = torch.cat((batch_states, batch_previous_actions), dim=1)
+            elif args.input_type == 'prev_state_action':
+                batch_previous_states = torch.tensor(prev_states, dtype=torch.float32)
+                batch_previous_actions = torch.tensor(previous_actions, dtype=torch.float32)
+                model_input = torch.cat((batch_states, batch_previous_actions, batch_previous_states), dim=1)
+            elif args.input_type == 'state_prev_state':
+                batch_previous_states = torch.tensor(prev_states, dtype=torch.float32)
+                model_input = torch.cat((batch_states, batch_previous_states), dim=1)
+            else:
+                raise ValueError("Invalid data type. Must be 'states' or 'states_action' or 'prev_states_action'")
+            mu, log_std = model(model_input)
+            nll = gaussian_reg_nll_loss(mu, log_std, labels)
+            mse = nn.functional.mse_loss(mu,labels)
 
-    for epoch in range(1, args.epochs+1):
-        # --- train ---
+            batch_nll += nll
+            batch_mse += mse
+
+        return batch_nll / args.nb_traj, batch_mse / args.nb_traj
+
+    history = {'train_nll':[], 'train_mse':[],'val_nll':[], 'val_mse':[]}
+
+    for epoch in range(1, args.epochs + 1):
         model.train()
-        total_train_nll = 0.0
-        total_train_mse = 0.0
-        for x_batch, y_batch in train_loader:
-            x_batch, y_batch = x_batch.to(args.device), y_batch.to(args.device)
+        train_nlls, train_mses = [], []
+
+        for step in range(1, args.n_grad_steps + 1):
             optimizer.zero_grad()
-            mu, log_s = model(x_batch)
-            loss = gaussian_nll_loss(mu, log_s, y_batch)
-            mse_loss = nn.MSELoss()(mu, y_batch.view(-1, 1) if args.act_dim == 1 else y_batch)
-            loss.backward()
+            nll_loss, mse_loss = process_batch(train_episodes, processed_train_data)
+            nll_loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            total_train_nll += loss.item() * x_batch.size(0)
-            total_train_mse += mse_loss.item() * x_batch.size(0)
-        avg_train_nll = total_train_nll / len(train_loader.dataset)
-        avg_train_mse = total_train_mse / len(train_loader.dataset)
 
-        # --- validate ---
+            train_nlls.append(nll_loss.item())
+            train_mses.append(mse_loss.item())
+
+            if step % 10 == 0:
+                print(
+                    f"[Epoch {epoch}] Step {step}/{args.n_grad_steps}  "
+                    f"train_nll={nll_loss.item():.4f}  train_mse={mse_loss.item():.4f}"
+                )
+
+        mean_train_nll = float(np.mean(train_nlls))
+        mean_train_mse = float(np.mean(train_mses))
+
+        # ─── validation ───────────────────────────────────────────────────────────
         model.eval()
-        total_val_nll = 0.0
-        total_val_mse = 0.0
+        val_nlls, val_mses = [], []
         with torch.no_grad():
-            for xb, yb in val_loader:
-                xb, yb = xb.to(args.device), yb.to(args.device)
-                mu, log_s = model(xb)
-                loss = gaussian_nll_loss(mu, log_s, yb)
-                mse_loss = nn.MSELoss()(mu, yb.view(-1, 1) if args.act_dim == 1 else yb)
-                total_val_nll += loss.item() * xb.size(0)
-                total_val_mse += mse_loss.item() * xb.size(0)
-        avg_val_nll = total_val_nll / len(val_loader.dataset)
-        avg_val_mse = total_val_mse / len(val_loader.dataset)
+            for _ in range(max(1, args.n_grad_steps // 4)):
+                vnll, vmse = process_batch(val_episodes, processed_val_data)
+                val_nlls.append(vnll.item())
+                val_mses.append(vmse.item())
 
-        print(f"Epoch {epoch}/{args.epochs} |"
-              f" Train: {avg_train_nll:.4f} | Val: {avg_val_nll:.4f}")
+        mean_val_nll = float(np.mean(val_nlls))
+        mean_val_mse = float(np.mean(val_mses))
 
-        history['train_nll'].append(avg_train_nll)
-        history['train_mse'].append(avg_train_mse)
-        history['val_nll'].append(avg_val_nll)
-        history['val_mse'].append(avg_val_mse)
+        print(f"→ Epoch {epoch}/{args.epochs}  "
+                f"Train NLL: {mean_train_nll:.4f}  Train MSE: {mean_train_mse:.4f}  "
+                f"Val NLL: {mean_val_nll:.4f}    Val MSE: {mean_val_mse:.4f}")
 
-        scheduler.step(avg_val_nll)
-        early_stopping(avg_val_nll, model)
+        history['train_nll'].append(mean_train_nll)
+        history['train_mse'].append(mean_train_mse)
+        history['val_nll'].append(mean_val_nll)
+        history['val_mse'].append(mean_val_mse)
+
+        scheduler.step(mean_val_nll)
+        early_stopping(mean_val_nll, model)
         if early_stopping.early_stop:
-            print("→ Early stopping triggered")
+            print("Early stopping triggered at epoch", epoch)
             break
-
-    # 11) Load best‐model & return
-    model.load_state_dict(torch.load(expert_model_path))
-    return model, history, X_test, Y_test
+    # ─── 5) Load the best weights & return ───────────────────────────────────────
+    model.load_state_dict(torch.load(expert_model_path, weights_only=True))
+    print('preparing test data...')
+    X_test, y_test = prepare_data(processed_test_data, args.input_type)
+    print('out')
+    return model, history, X_test, y_test
 
 
 def plot_metrics(history, save_path):
@@ -307,7 +314,7 @@ def test_model(model, raw_states: np.ndarray, raw_actions: np.ndarray, args):
         sampled_action = sampled_action.cpu().numpy()
         log_s = log_s.cpu().numpy()
 
-    nll = gaussian_nll_loss(
+    nll = gaussian_reg_nll_loss(
         torch.from_numpy(mean_action),
         torch.from_numpy(log_s),
         torch.from_numpy(raw_actions)
@@ -322,11 +329,9 @@ def test_model(model, raw_states: np.ndarray, raw_actions: np.ndarray, args):
     if args.env_name == 'Pendulum-v1':
         fig = plt.figure(figsize=(10,10))
         ax = fig.add_subplot(111, projection='3d')
-        angles = np.arctan2(raw_states[:,1], raw_states[:,0])
-        angle_vels = raw_states[:,2]
-        ax.scatter(angles,angle_vels, raw_actions.flatten(),
+        ax.scatter(raw_states[:,0],raw_states[:,1], raw_actions.flatten(),
                 color='blue', marker='o', label='True Actions', alpha=0.5)
-        ax.scatter(angles, angle_vels, mean_action.flatten(),
+        ax.scatter(raw_states[:,0], raw_states[:,1], mean_action.flatten(),
                 color='red',  marker='x', label='Predicted Mean Actions', alpha=0.6)
         ax.set_xlabel('State dim 0 (raw)')
         ax.set_ylabel('State dim 1 (raw)')
@@ -354,8 +359,3 @@ def test_model(model, raw_states: np.ndarray, raw_actions: np.ndarray, args):
     plt.show()
 
     return nll, mse
-
-def eval_rollout(model, env, args, test_data):
-    pass
-
-    
