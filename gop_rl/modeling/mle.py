@@ -159,7 +159,7 @@ def train(args,csv_file_path:str):
             states = np.stack(states)
 
             previous_actions = df['prev_actions'].to_numpy()
-            if args.standardize:
+            if args.input_type != 'state':
                 previous_actions = [np.array(a, dtype=np.float32) for a in previous_actions]
                 previous_actions = np.stack(previous_actions)
                 
@@ -317,9 +317,9 @@ def test_model(model, raw_states: np.ndarray, raw_actions: np.ndarray, args):
     if args.env_name == 'Pendulum-v1':
         fig = plt.figure(figsize=(10,10))
         ax = fig.add_subplot(111, projection='3d')
-        ax.scatter(raw_states[:,0],raw_states[:,1], raw_actions.flatten(),
-                color='blue', marker='o', label='True Actions', alpha=0.5)
-        ax.scatter(raw_states[:,0], raw_states[:,1], mean_action.flatten(),
+        ax.scatter(raw_states[:1000,0],raw_states[:1000,1], raw_actions.flatten()[:1000],
+                color='blue', marker='o', label='True Actions', alpha=0.4)
+        ax.scatter(raw_states[:1000,0], raw_states[:1000,1], mean_action.flatten()[:1000],
                 color='red',  marker='x', label='Predicted Mean Actions', alpha=0.6)
         ax.set_xlabel('State dim 0 (raw)')
         ax.set_ylabel('State dim 1 (raw)')
@@ -333,7 +333,7 @@ def test_model(model, raw_states: np.ndarray, raw_actions: np.ndarray, args):
         ax = ax.flatten()
 
         for i in range(action_dim):
-            ax[i].scatter(raw_actions[:,i], mean_action[:,i], marker='x', color='red', label='Predicted Mean Actions', alpha=0.6)
+            ax[i].scatter(raw_actions[:1000,i], mean_action[:1000,i], marker='x', color='red', label='Predicted Mean Actions', alpha=0.6)
             ax[i].set_xlabel(f'true action dim{i}')
             ax[i].set_ylabel(f'predicted action dim {i}')
             ax[i].grid(True)
@@ -343,7 +343,8 @@ def test_model(model, raw_states: np.ndarray, raw_actions: np.ndarray, args):
             ax[i].legend(loc='best')
     
     plt.tight_layout()
-    plt.savefig(f'{args.output_dir}/{args.input_type}_mle_fit.svg')
-    plt.show()
+    plt.savefig(f'{args.output_dir}/{args.input_type}_mle_fit_{args.cycle}.svg')
+    plt.close()
+
 
     return nll, mse

@@ -7,9 +7,11 @@ import pandas as pd
 from tqdm import tqdm
 from gymnasium.vector import SyncVectorEnv
 
+
 from gop_rl.utils import set_seeds
 from gop_rl.utils.io import handle_exploration, handle_input
 from gop_rl.agents import ddpg as agent
+
 
 def make_env(env_name: str, seed: int):
     def _init():
