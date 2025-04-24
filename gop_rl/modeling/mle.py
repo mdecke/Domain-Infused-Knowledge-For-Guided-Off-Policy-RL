@@ -1,11 +1,9 @@
 import os
-import random
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import TensorDataset, DataLoader
 
 import matplotlib.pyplot as plt
 
@@ -14,9 +12,8 @@ import gymnasium as gym
 
 from gop_rl.utils import data_processor, prepare_data
 
-import random
-from collections import defaultdict
 
+_LOG_2PI_HALF = 0.5*torch.log(torch.tensor(2) * torch.pi)
 
 class EarlyStopping:
     def __init__(self, patience=7, min_delta=0, path='best_model.pth'):
@@ -43,8 +40,9 @@ class EarlyStopping:
     def save_checkpoint(self, model):
         torch.save(model.state_dict(), self.path)
 
+
 class ActionMLE(nn.Module):
-    def __init__(self, state_dim, action_dim, action_lim=2.0):
+    def __init__(self, state_dim, action_dim, action_lim):
         super(ActionMLE, self).__init__()
 
         if type(action_lim) is not torch.Tensor:
@@ -82,21 +80,19 @@ class ActionMLE(nn.Module):
 
 
 def gaussian_reg_nll_loss(mu:torch.Tensor, log_std:torch.Tensor, target:torch.Tensor):
-    std = torch.exp(log_std)
-    variance = std ** 2
-    log_variance = 2 * log_std
-    
-    nll = 0.5 * (
-        log_variance + 
-        ((target - mu) ** 2) / variance + 
-        torch.log(2 * torch.tensor(np.pi))
-    )
-    var_reg = 1e-4 * (torch.exp(-log_std)).mean()
-    return nll.mean() + var_reg
+    inv_var = torch.exp(-2.0 * log_std)
+    squared_diff = (target - mu) ** 2
+    # nll = 0.5 * (
+    #     log_variance + 
+    #     ((target - mu) ** 2) / variance + 
+    #     torch.log(2 * torch.tensor(np.pi))
+    # )
+    nll = log_std + 0.5 * squared_diff * inv_var + _LOG_2PI_HALF
+    return nll.mean() + (1e-4 * inv_var.mean())  
 
 
 
-def train_model(args,csv_file_path:str):
+def train(args,csv_file_path:str):
     
     dummy_env = gym.make(args.env_name)
     args.obs_dim = dummy_env.observation_space.shape[0]
@@ -115,7 +111,7 @@ def train_model(args,csv_file_path:str):
     np.random.shuffle(episodes_array)
     
     split_train_idx = int(len(episodes) * 0.7)
-    split_val_idx = split_train_idx + int(len(episodes) * 0.15)
+    split_val_idx = split_train_idx + int(len(episodes) * 0.20)
     
     train_episodes = episodes_array[:split_train_idx]
     val_episodes = episodes_array[split_train_idx:split_val_idx]
@@ -259,9 +255,8 @@ def train_model(args,csv_file_path:str):
             break
     # ─── 5) Load the best weights & return ───────────────────────────────────────
     model.load_state_dict(torch.load(expert_model_path, weights_only=True))
-    print('preparing test data...')
     X_test, y_test = prepare_data(processed_test_data, args.input_type)
-    print('out')
+
     return model, history, X_test, y_test
 
 
@@ -306,26 +301,19 @@ def test_model(model, raw_states: np.ndarray, raw_actions: np.ndarray, args):
         states_std = np.concatenate([current_states_std, prev_state_std], axis=1)
     else:
         raise ValueError("Invalid input type. Must be 'state', 'state_action' or 'state_prev_state'")
-
+    
     with torch.no_grad():
         model_input = torch.from_numpy(states_std).float().to(args.device)
         sampled_action, mean_action, log_s = model.sample(model_input)
-        mean_action = mean_action.cpu().numpy()
-        sampled_action = sampled_action.cpu().numpy()
-        log_s = log_s.cpu().numpy()
+        raw_actions_tensor = torch.from_numpy(raw_actions).float().to(args.device)
 
-    nll = gaussian_reg_nll_loss(
-        torch.from_numpy(mean_action),
-        torch.from_numpy(log_s),
-        torch.from_numpy(raw_actions)
-    ).item()
-    mse = nn.MSELoss()(
-        torch.from_numpy(mean_action),
-        torch.from_numpy(raw_actions).view(-1, 1) if args.act_dim == 1 else torch.from_numpy(raw_actions)
-    ).item()
-
+        nll = gaussian_reg_nll_loss(mean_action,log_s,raw_actions_tensor).item()
+        mse = nn.MSELoss()(mean_action, raw_actions_tensor.view(-1, 1) if args.act_dim == 1 else raw_actions_tensor).item()
     
-    # for Pendulum-v1: raw_states[:,0]=cosθ, raw_states[:,1]=sinθ
+    mean_action = mean_action.cpu().numpy()
+    sampled_action = sampled_action.cpu().numpy()
+    log_s = log_s.cpu().numpy()
+
     if args.env_name == 'Pendulum-v1':
         fig = plt.figure(figsize=(10,10))
         ax = fig.add_subplot(111, projection='3d')

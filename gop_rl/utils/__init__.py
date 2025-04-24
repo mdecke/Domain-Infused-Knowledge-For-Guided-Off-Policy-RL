@@ -103,6 +103,11 @@ def data_processor(data:Union[str, pd.DataFrame], args:dict, test:bool=False):
             lambda x: (x - actions_mean) / actions_std if isinstance(x, (int, float))
             else (np.array(x) - actions_mean) / actions_std
         )
+    else:
+        state_mean = np.zeros_like(df['states'].iloc[0])
+        state_std = np.ones_like(df['states'].iloc[0])
+        actions_mean = np.zeros_like(df['actions'].iloc[0])
+        actions_std = np.ones_like(df['actions'].iloc[0])
     
     augmented_data = augment_data(df)
     return augmented_data, state_mean, state_std, actions_mean, actions_std
