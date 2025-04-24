@@ -33,7 +33,7 @@ def main():
         csv_file_name = f'{args.data_dir}/elqr_{args.num_episodes}_episodes.csv'
         data = pd.read_csv(csv_file_name)
         data['states'] = data['states'].apply(lambda x: ast.literal_eval(x))
-        data['angle_state'] = data['states'].apply(lambda x: np.arctan2(x[1], x[0]))
+        data['angle_state'] = data['states'].apply(lambda x: x[0])
         N_EPISODES = data['episode'].nunique()
         
         n_traj_to_plot = 6
@@ -45,7 +45,7 @@ def main():
             time_steps   = episode_data.index
 
             angles       = episode_data['angle_state']
-            angular_vels = episode_data['states'].apply(lambda x: x[2])
+            angular_vels = episode_data['states'].apply(lambda x: x[1])
             actions      = episode_data['actions']
 
             ax[0].plot(time_steps, angles,       label=f'Episode {i}')
