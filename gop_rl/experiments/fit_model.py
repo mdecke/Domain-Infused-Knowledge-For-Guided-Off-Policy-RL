@@ -88,11 +88,11 @@ def main():
             raise ValueError("Invalid model type. Must be 'mle' or 'cnf'")
     
     df_mle = pd.DataFrame(all_records)
-    out_path = f"{args.data_dir}/{args.model_type}all_cycles_history.csv"
+    out_path = f"{args.data_dir}/{args.model_type}/{args.input_type}_all_cycles_history.csv"
     df_mle.to_csv(out_path, index=False)
 
     df_cnf = pd.DataFrame(all_metrics)
-    out_path = f"{args.data_dir}/{args.model_type}/all_cycles_history.csv"
+    out_path = f"{args.data_dir}/{args.model_type}/{args.input_type}_all_cycles_history.csv"
     df_cnf.to_csv(out_path, index=False)
     print(f"[INFO] Wrote full-cycle history to {out_path}")
 if __name__ == "__main__":
