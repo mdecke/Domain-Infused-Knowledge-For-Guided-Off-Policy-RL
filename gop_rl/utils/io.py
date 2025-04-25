@@ -54,7 +54,7 @@ def chose_exploration(args): #handle different size inputs?
 
     match args.exploration_type:
         case 'gaussian':
-            if args.env_name =='Pendulum':
+            if args.env_name =='Pendulum-v1':
                 explorator = Normal(loc=0, scale=0.2)
             else:
                 explorator = Normal(loc=0.0, scale=0.1)
