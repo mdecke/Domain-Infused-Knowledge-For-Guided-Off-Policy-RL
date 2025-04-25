@@ -9,12 +9,13 @@ import matplotlib.pyplot as plt
 
 import pandas as pd
 import gymnasium as gym
+import math
 
 from gop_rl.utils import data_processor, prepare_data
 from gop_rl.modeling import EarlyStopping
 
 
-_LOG_2PI_HALF = 0.5*torch.log(torch.tensor(2) * torch.pi)
+_LOG_2PI_HALF = 0.5*math.log(2 * math.pi)
 
 class ActionMLE(nn.Module):
     def __init__(self, state_dim, action_dim, action_lim):
@@ -43,7 +44,7 @@ class ActionMLE(nn.Module):
     def forward(self, state):
         x = self.fc(state)
         mu = self.action_lim*torch.tanh(self.mu_head(x))
-        log_sigma = torch.clamp(self.log_sigma_head(x), min=-3.0, max=3.0)
+        log_sigma = torch.clamp(self.log_sigma_head(x), min=-5.0, max=2.0) #clamps sigma to be in [0.01, 7.0]
         return mu, log_sigma
     
     def sample(self, state):
@@ -57,11 +58,6 @@ class ActionMLE(nn.Module):
 def gaussian_reg_nll_loss(mu:torch.Tensor, log_std:torch.Tensor, target:torch.Tensor):
     inv_var = torch.exp(-2.0 * log_std)
     squared_diff = (target - mu) ** 2
-    # nll = 0.5 * (
-    #     log_variance + 
-    #     ((target - mu) ** 2) / variance + 
-    #     torch.log(2 * torch.tensor(np.pi))
-    # )
     nll = log_std + 0.5 * squared_diff * inv_var + _LOG_2PI_HALF
     return nll.mean() + (1e-4 * inv_var.mean())  
 
@@ -148,7 +144,7 @@ def train(args,csv_file_path:str):
             
             if args.env_name == 'Pendulum-v1':
                 labels = torch.tensor(targets, dtype=torch.float32, device=args.device).reshape(-1, 1)
-                previous_actions.reshape(-1, 1)
+                previous_actions = previous_actions.reshape(-1, 1)
             else:
                 targets = [np.array(t, dtype=np.float32) for t in targets]
                 targets = np.stack(targets)
@@ -292,9 +288,9 @@ def test_model(model, raw_states: np.ndarray, raw_actions: np.ndarray, args):
     if args.env_name == 'Pendulum-v1':
         fig = plt.figure(figsize=(10,10))
         ax = fig.add_subplot(111, projection='3d')
-        ax.scatter(raw_states[:1000,0],raw_states[:1000,1], raw_actions.flatten()[:1000],
+        ax.scatter(raw_states[:5000,0],raw_states[:5000,1], raw_actions.flatten()[:5000],
                 color='blue', marker='o', label='True Actions', alpha=0.4)
-        ax.scatter(raw_states[:1000,0], raw_states[:1000,1], mean_action.flatten()[:1000],
+        ax.scatter(raw_states[:5000,0], raw_states[:5000,1], mean_action.flatten()[:5000],
                 color='red',  marker='x', label='Predicted Mean Actions', alpha=0.6)
         ax.set_xlabel('State dim 0 (raw)')
         ax.set_ylabel('State dim 1 (raw)')
@@ -308,7 +304,7 @@ def test_model(model, raw_states: np.ndarray, raw_actions: np.ndarray, args):
         ax = ax.flatten()
 
         for i in range(action_dim):
-            ax[i].scatter(raw_actions[:1000,i], mean_action[:1000,i], marker='x', color='red', label='Predicted Mean Actions', alpha=0.6)
+            ax[i].scatter(raw_actions[:5000,i], mean_action[:5000,i], marker='x', color='red', label='Predicted Mean Actions', alpha=0.6)
             ax[i].set_xlabel(f'true action dim{i}')
             ax[i].set_ylabel(f'predicted action dim {i}')
             ax[i].grid(True)
@@ -320,6 +316,5 @@ def test_model(model, raw_states: np.ndarray, raw_actions: np.ndarray, args):
     plt.tight_layout()
     plt.savefig(f'{args.output_dir}/{args.model_type}/{args.input_type}_fit_cycle_{args.cycle}.svg')
     plt.close()
-
 
     return nll, mse

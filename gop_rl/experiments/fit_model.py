@@ -52,7 +52,7 @@ def main():
             print('[INFO] Training MLE model...')
             model,history, test_inputs_np, test_labels_np= mle.train(args,csv_file_name)
             print([f'[INFO] Model saved to {args.output_dir}/{args.model_type}/{args.input_type}_model_cycle{i+1}.pt'])
-            mle.plot_metrics(history, f'{args.output_dir}/{args.model_type}/{args.input_type}_metrics_cycle{i+1}.svg')
+            mle.plot_metrics(history, args)
             print(f'[INFO] Test metrics saved to {args.output_dir}/{args.model_type}/{args.input_type}_model_cycle{i+1}.pt')
             test_nll, test_mse = mle.test_model(model,raw_states=test_inputs_np, raw_actions=test_labels_np,args=args)
             print(f'[INFO] Test NLL: {test_nll:.4f}, Test MSE: {test_mse:.4f}')
@@ -66,6 +66,7 @@ def main():
                 'test_nll'   : test_nll,
                 'test_mse'   : test_mse,
             })
+            print(f'[INFO] Cycle {i+1} records: {all_records[-1]}')
         elif args.model_type == 'cnf':
             print('[INFO] Training CNF model...')
             model, train_losses, val_losses, X_test, y_test = cnf.train(args,csv_file_name)
@@ -86,14 +87,15 @@ def main():
             })
         else:
             raise ValueError("Invalid model type. Must be 'mle' or 'cnf'")
-    
-    df_mle = pd.DataFrame(all_records)
-    out_path = f"{args.data_dir}/{args.model_type}/{args.input_type}_all_cycles_history.csv"
-    df_mle.to_csv(out_path, index=False)
 
-    df_cnf = pd.DataFrame(all_metrics)
+    if args.model_type == 'mle':
+        df = pd.DataFrame(all_records)
+    else:  # cnf
+        df = pd.DataFrame(all_metrics)
+        
     out_path = f"{args.data_dir}/{args.model_type}/{args.input_type}_all_cycles_history.csv"
-    df_cnf.to_csv(out_path, index=False)
+    df.to_csv(out_path, index=False)
     print(f"[INFO] Wrote full-cycle history to {out_path}")
+
 if __name__ == "__main__":
     main()
