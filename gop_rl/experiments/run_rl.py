@@ -12,6 +12,8 @@ from gop_rl.utils import set_seeds
 from gop_rl.utils.io import chose_exploration, handle_input
 from gop_rl.agents import ddpg as agent
 
+import time
+
 
 def make_env(env_name: str, seed: int):
     def _init():
@@ -20,75 +22,37 @@ def make_env(env_name: str, seed: int):
         return env
     return _init
 
-# def evaluate_policy(env_name:str, policy: agent.Policy, device: torch.device, n_episodes:int=100, seed:int=0) -> float:
-#     """Run exactly one episode per sub-env (no exploration noise)."""
-#     policy.eval()
-#     env = gym.make(env_name)
-#     act_lim_high = env.action_space.high
-#     act_lim_low = env.action_space.low
-#     episode_rewards = []
-#     for n in range(n_episodes):
-#         obs, _ = env.reset(seed=seed+n)
-#         done = False
-#         cumulative_reward = 0
-#         while not done:
-#             with torch.no_grad():
-#                 obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device)
-#                 action = policy(obs_tensor).cpu().numpy()
-#             clipped_action = np.clip(action, a_min=act_lim_low, a_max=act_lim_high)
-
-#             obs_,r,trunc ,term, _ = env.step(clipped_action)
-#             cumulative_reward += r
-#             done = trunc or term
-#             obs = obs_.copy()
-#             if done:
-#                 episode_rewards.append(cumulative_reward)
-#     env.close()
-#     policy.train()
-#     return float(np.array(episode_rewards).mean())
-def evaluate_policy(
-    env_name: str,
-    policy: agent.Policy,
-    device: torch.device,
-    n_envs: int = 100,
-    seed: int = 0,
-    length: int = 1000
-) -> float:
-    """Runs one full episode in each of n_envs parallel envs, then returns the mean return."""
+def evaluate_policy(env_name: str, policy: agent.Policy,args:dict,seed:int) -> float:
+    
     policy.eval()
-    # 1) Create n_envs parallel copies
-    envs = SyncVectorEnv([
-        make_env(env_name, seed + i) for i in range(n_envs)
-    ])
-    # 2) Grab action bounds
+    envs = SyncVectorEnv([make_env(env_name, seed + i) for i in range(args.num_envs)])
+
     act_high = envs.single_action_space.high
     act_low  = envs.single_action_space.low
 
-    # 3) Reset all envs, init trackers
     obs, _ = envs.reset()
-    episodes = torch.zeros((), device=device)
-    episode_reward = torch.zeros((), device=device)
+    episodes = torch.zeros((), device=args.device)
+    episode_reward = torch.zeros((), device=args.device)
 
-    # 4) Step until every sub-env signals done
-    for _ in range(length):
+
+    for _ in range(args.max_episode_length):
         with torch.no_grad():
-            # batch inference
-            obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=device)
+
+            obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=args.device)
             actions = policy(obs_tensor).cpu().numpy()
-        # clip and step
+
         clipped = np.clip(actions, act_low, act_high)
         obs, rews, terms, truncs, _ = envs.step(clipped)
         done = np.logical_or(terms,truncs)
-        obs = torch.tensor(obs, device=device, dtype=torch.float32)
-        done = torch.tensor(done, device=device, dtype=torch.float32)
-        reward = torch.tensor(rews, device=device, dtype=torch.float32)
+        obs = torch.tensor(obs, device=args.device, dtype=torch.float32)
+        done = torch.tensor(done, device=args.device, dtype=torch.float32)
+        reward = torch.tensor(rews, device=args.device, dtype=torch.float32)
         episodes += torch.sum(done)
         episode_reward += torch.sum(reward)
 
     envs.close()
     policy.train()
 
-    # 5) Return average over all parallel episodes
     return episode_reward / episodes
 
 
@@ -221,7 +185,8 @@ def main():
                                      'q_loss': rl_agent.q_loss[-1]})
             
             if t > 0 and t % args.eval_freq == 0:
-                avg_r = evaluate_policy(env_name=args.env_name, policy=rl_agent.pi, device=device, n_envs=200, seed=int(test_seeds[cycle_idx]),length=args.max_episode_length)
+                avg_r= evaluate_policy(env_name=args.env_name, policy=rl_agent.pi, args=args, seed=int(test_seeds[cycle_idx]))
+                total_steps = t*args.num_envs
                 eval_records.append({'cycle': cycle_idx+1,
                                      'step': t,
                                      'avg_return': avg_r})

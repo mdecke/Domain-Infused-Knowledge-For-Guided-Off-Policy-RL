@@ -54,7 +54,10 @@ def chose_exploration(args): #handle different size inputs?
 
     match args.exploration_type:
         case 'gaussian':
-            explorator = Normal(loc=0, scale=0.1)
+            if args.env_name =='Pendulum':
+                explorator = Normal(loc=0, scale=0.2)
+            else:
+                explorator = Normal(loc=0.0, scale=0.1)
             noise = True
         case 'ou':
             explorator = OrnsteinUhlenbeckNoise(theta=0.15, sigma=0.1, base_scale=0.1)
