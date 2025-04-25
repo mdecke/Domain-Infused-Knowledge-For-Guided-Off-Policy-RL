@@ -9,7 +9,7 @@ from gymnasium.vector import SyncVectorEnv
 
 
 from gop_rl.utils import set_seeds
-from gop_rl.utils.io import handle_exploration, handle_input
+from gop_rl.utils.io import chose_exploration, handle_input
 from gop_rl.agents import ddpg as agent
 
 
@@ -20,39 +20,83 @@ def make_env(env_name: str, seed: int):
         return env
     return _init
 
-def evaluate_policy(env_name:str, policy: agent.Policy, device: torch.device, n_episodes:int=100, seed:int=0) -> float:
-    """Run exactly one episode per sub-env (no exploration noise)."""
-    policy.eval()
-    env = gym.make(env_name)
-    act_lim_high = env.action_space.high
-    act_lim_low = env.action_space.low
-    episode_rewards = []
-    for n in range(n_episodes):
-        obs, _ = env.reset(seed=seed+n)
-        done = False
-        cumulative_reward = 0
-        while not done:
-            with torch.no_grad():
-                obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device)
-                action = policy(obs_tensor).cpu().numpy()
-            clipped_action = np.clip(action, a_min=act_lim_low, a_max=act_lim_high)
+# def evaluate_policy(env_name:str, policy: agent.Policy, device: torch.device, n_episodes:int=100, seed:int=0) -> float:
+#     """Run exactly one episode per sub-env (no exploration noise)."""
+#     policy.eval()
+#     env = gym.make(env_name)
+#     act_lim_high = env.action_space.high
+#     act_lim_low = env.action_space.low
+#     episode_rewards = []
+#     for n in range(n_episodes):
+#         obs, _ = env.reset(seed=seed+n)
+#         done = False
+#         cumulative_reward = 0
+#         while not done:
+#             with torch.no_grad():
+#                 obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device)
+#                 action = policy(obs_tensor).cpu().numpy()
+#             clipped_action = np.clip(action, a_min=act_lim_low, a_max=act_lim_high)
 
-            obs_,r,trunc ,term, _ = env.step(clipped_action)
-            cumulative_reward += r
-            done = trunc or term
-            obs = obs_.copy()
-            if done:
-                episode_rewards.append(cumulative_reward)
-    env.close()
+#             obs_,r,trunc ,term, _ = env.step(clipped_action)
+#             cumulative_reward += r
+#             done = trunc or term
+#             obs = obs_.copy()
+#             if done:
+#                 episode_rewards.append(cumulative_reward)
+#     env.close()
+#     policy.train()
+#     return float(np.array(episode_rewards).mean())
+def evaluate_policy(
+    env_name: str,
+    policy: agent.Policy,
+    device: torch.device,
+    n_envs: int = 100,
+    seed: int = 0,
+    length: int = 1000
+) -> float:
+    """Runs one full episode in each of n_envs parallel envs, then returns the mean return."""
+    policy.eval()
+    # 1) Create n_envs parallel copies
+    envs = SyncVectorEnv([
+        make_env(env_name, seed + i) for i in range(n_envs)
+    ])
+    # 2) Grab action bounds
+    act_high = envs.single_action_space.high
+    act_low  = envs.single_action_space.low
+
+    # 3) Reset all envs, init trackers
+    obs, _ = envs.reset()
+    episodes = torch.zeros((), device=device)
+    episode_reward = torch.zeros((), device=device)
+
+    # 4) Step until every sub-env signals done
+    for _ in range(length):
+        with torch.no_grad():
+            # batch inference
+            obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=device)
+            actions = policy(obs_tensor).cpu().numpy()
+        # clip and step
+        clipped = np.clip(actions, act_low, act_high)
+        obs, rews, terms, truncs, _ = envs.step(clipped)
+        done = np.logical_or(terms,truncs)
+        obs = torch.tensor(obs, device=device, dtype=torch.float32)
+        done = torch.tensor(done, device=device, dtype=torch.float32)
+        reward = torch.tensor(rews, device=device, dtype=torch.float32)
+        episodes += torch.sum(done)
+        episode_reward += torch.sum(reward)
+
+    envs.close()
     policy.train()
-    return float(np.array(episode_rewards).mean())
+
+    # 5) Return average over all parallel episodes
+    return episode_reward / episodes
 
 
 def main():
     parser = argparse.ArgumentParser(description='Run RL agent on parallel environments')
     parser.add_argument('--env_name', type=str, default='Pendulum-v1', help='Environment name')
     parser.add_argument('--agent', type=str, default='ddpg', help='Agent name')
-    parser.add_argument('--exploration', type=str, default='gaussian', help='Exploration type')
+    parser.add_argument('--exploration_type', type=str, default='gaussian', help='Exploration type')
     parser.add_argument('--seed', type=int, default=0, help='Random seed')
     parser.add_argument('--n_cycles', type=int, default=5, help='Number of training cycles')
     parser.add_argument('--training_steps', type=int, default=15000, help='Number of training time steps')
@@ -68,6 +112,9 @@ def main():
     parser.add_argument('--render', action='store_true', help='Render the environment')
     parser.add_argument('--data_dir', type=str, default='data/pendulum', help='Directory to save data')
     parser.add_argument('--output_dir', type=str, default='outputs/pendulum', help='Directory to save models')
+    parser.add_argument('--scale', type=int, choices=[0, 1], default=0, help='Enable running standard scaler (0=disabled, 1=enabled)')
+    parser.add_argument('--input_type', type=str, default='state', help='Input history to expert model')
+    parser.add_argument('--n_flows', type=int, default=10, help='Number of flows in CNF')
     args = parser.parse_args()
 
     os.makedirs(args.data_dir, exist_ok=True)
@@ -78,16 +125,16 @@ def main():
 
     # Determine dimensions from a dummy env
     dummy = gym.make(args.env_name)
-    state_dim  = dummy.observation_space.shape[0]
-    action_dim = dummy.action_space.shape[0]
-    action_low = dummy.action_space.low
-    action_high= dummy.action_space.high
+    args.state_dim  = dummy.observation_space.shape[0]
+    args.action_dim = dummy.action_space.shape[0]
+    args.action_low = dummy.action_space.low
+    args.action_high= dummy.action_space.high
     dummy.close()
 
-    explorator, noise = handle_exploration(
-        args.exploration, action_dim, action_low, action_high, args.device
-    )
-    print(f"[INFO] Exploration type: {args.exploration}")
+    
+
+    explorator, noise = chose_exploration(args)
+    print(f"[INFO] Exploration type: {args.exploration_type}")
 
     seeds = set_seeds(args.seed, 2*args.n_cycles)
     train_seeds, test_seeds = np.split(seeds, 2)
@@ -105,8 +152,8 @@ def main():
         np.random.seed(seed)
 
         # initialize policy and Q-function
-        behavior_policy = agent.Policy(state_dim=state_dim, action_dim=action_dim,action_lim=action_high, device=device)
-        behavior_Q_fct = agent.Value(state_dim=state_dim, action_dim=action_dim,device=device)
+        behavior_policy = agent.Policy(state_dim=args.state_dim, action_dim=args.action_dim,action_lim=args.action_high, device=device)
+        behavior_Q_fct = agent.Value(state_dim=args.state_dim, action_dim=args.action_dim,device=device)
         
         agent.init_model_weights(behavior_policy, low=0.0, high=0.001, seed=seed)
         agent.init_model_weights(behavior_Q_fct,  low=0.0, high=0.001, seed=seed)
@@ -115,17 +162,18 @@ def main():
                               discount_factor=args.discount,
                               seed=seed, device=device)
         
-        memory = agent.DDPGMemory(buffer_length=args.buffer_size, state_dim=state_dim,
-                                  action_dim=action_dim, device=device)
+        memory = agent.DDPGMemory(buffer_length=args.buffer_size, state_dim=args.state_dim,
+                                  action_dim=args.action_dim, device=device)
 
         # create vectorized envs for this cycle
         train_envs = SyncVectorEnv([make_env(args.env_name, seed = seed + i) for i in range(args.num_envs)])
         
         obs, _ = train_envs.reset()
+        # print(obs.shape)
         cumulative_reward = np.zeros(args.num_envs, dtype=np.float32)
         episode_counter = np.zeros(args.num_envs, dtype=int)
-        prev_action = np.zeros((args.num_envs, action_dim))
-        prev_state = np.zeros_like(obs)
+        prev_action = np.zeros((args.num_envs, args.action_dim))
+        prev_obs = np.zeros_like(obs)
 
         progress_bar = tqdm(range(args.training_steps),desc=f"Cycle {cycle_idx+1}/{args.n_cycles}",unit="step")
 
@@ -137,13 +185,18 @@ def main():
                 with torch.no_grad():
                     state = torch.tensor(obs, dtype=torch.float32, device=device)
                     action = behavior_policy(state)
+                    # print(action.shape)
                     if noise:
-                        exploration = explorator.sample(action.shape).to(device)
+                        exploration_action = explorator.sample(action.shape).to(device)
+                        raw_action = action + exploration_action
                     else:
-                        # explorator_input = handle_input(args.input_type)
-                        exploration = explorator.sample(state).to(device)
-                    raw_action = action + exploration
-                clipped_action = np.clip(raw_action.cpu().numpy(),a_min=action_low,a_max=action_high)
+                        explorator_input = handle_input(obs,prev_obs, prev_action, args)
+                        exploration_action = explorator.sample(explorator_input).to(device)
+                        # print(exploration_action.shape)
+                        quit()
+                        # raw_action = insert_scheme(action, exploration_action, args)
+                    
+                clipped_action = np.clip(raw_action.cpu().numpy(),a_min=args.action_low,a_max=args.action_high)
             
             # step envs
             next_obs, rewards, terminated, truncated, _ = train_envs.step(clipped_action)
@@ -168,7 +221,7 @@ def main():
                                      'q_loss': rl_agent.q_loss[-1]})
             
             if t > 0 and t % args.eval_freq == 0:
-                avg_r = evaluate_policy(env_name=args.env_name, policy=rl_agent.pi, device=device, seed=int(test_seeds[cycle_idx]))
+                avg_r = evaluate_policy(env_name=args.env_name, policy=rl_agent.pi, device=device, n_envs=200, seed=int(test_seeds[cycle_idx]),length=args.max_episode_length)
                 eval_records.append({'cycle': cycle_idx+1,
                                      'step': t,
                                      'avg_return': avg_r})
@@ -185,15 +238,15 @@ def main():
                         BEST_SO_FAR = cumulative_reward[i]
                         torch.save(
                             behavior_policy.state_dict(),
-                            f"{args.data_dir}/best_{args.agent}_model_{args.exploration}.pth"
+                            f"{args.data_dir}/best_{args.agent}_model_{args.exploration_type}.pth"
                         )
                     return_records.append({'cycle': cycle_idx+1, 'env_idx': i,
                                            'episode': episode_counter[i],'return':  cumulative_reward[i]})
                     cumulative_reward[i] = 0.0
                     reset_obs, _ = train_envs.reset()
                     next_obs[i] = reset_obs[i]
-                    prev_action[i] = np.zeros_like((action_dim,))
-                    prev_state[i] = np.zeros_like((state_dim,))
+                    prev_action[i] = np.zeros_like((args.action_dim,))
+                    prev_state[i] = np.zeros_like((args.state_dim,))
 
             obs = next_obs.copy()
 
@@ -205,9 +258,9 @@ def main():
     df_ret    = pd.DataFrame(return_records)
     df_eval   = pd.DataFrame(eval_records)
 
-    df_loss.to_csv(os.path.join(args.data_dir, f"losses_{args.exploration}.csv"),     index=False)
-    df_ret .to_csv(os.path.join(args.data_dir, f"returns_{args.exploration}.csv"),    index=False)
-    df_eval.to_csv(os.path.join(args.data_dir, f"eval_returns__{args.exploration}.csv"), index=False)
+    df_loss.to_csv(os.path.join(args.data_dir, f"losses_{args.exploration_type}.csv"),     index=False)
+    df_ret .to_csv(os.path.join(args.data_dir, f"returns_{args.exploration_type}.csv"),    index=False)
+    df_eval.to_csv(os.path.join(args.data_dir, f"eval_returns__{args.exploration_type}.csv"), index=False)
     print(f"[INFO] Metrics saved to {args.data_dir}")
 
 if __name__ == "__main__":

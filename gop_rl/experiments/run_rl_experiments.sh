@@ -11,8 +11,8 @@ python3 -m gop_rl.experiments.run_rl \
   --warm_up 40 \
   --num_envs 100 \
   --device 'cuda' \
-  --n_cycles 5 \
-  --eval_freq 2000 \
+  --n_cycles 1 \
+  --eval_freq 500 \
   --data_dir ../../data/ant \
   --output_dir ../../outputs/ant
 
