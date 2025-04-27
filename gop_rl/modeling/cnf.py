@@ -19,26 +19,18 @@ class ConditionalBase(nn.Module):
             action_lim = torch.tensor(action_lim, dtype=torch.float32)
         self.action_lim = action_lim
         
-        self.fc = nn.Sequential(nn.Linear(condition_dim, 256),
-                                nn.LayerNorm(256),
-                                nn.SiLU(),
-                                nn.Dropout(0.15),
-
-                                nn.Linear(256, 256),
-                                nn.LayerNorm(256),
-                                nn.SiLU(),
-                                nn.Dropout(0.15),
-
-                                nn.Linear(256, 64),
-                                nn.LayerNorm(64),
-                                nn.SiLU())
-        self.mu_head = nn.Linear(64, latent_dim)
-        self.log_sigma_head = nn.Linear(64, latent_dim)
+        self.fc = nn.Sequential(nn.Linear(condition_dim, 32),
+                                nn.ReLU(),
+                                nn.Linear(32, 16),
+                                # nn.LayerNorm(64),
+                                nn.ReLU())
+        self.mu_head = nn.Linear(16, latent_dim)
+        self.log_sigma_head = nn.Linear(16, latent_dim)
     
     def forward(self, condition):
         logits = self.fc(condition)
-        mu = self.action_lim * torch.tanh(self.mu_head(logits))
-        log_sigma = torch.clamp(self.log_sigma_head(logits), min=-3.0, max=3.0)
+        mu = self.mu_head(logits)
+        log_sigma = self.log_sigma_head(logits)
         return mu, log_sigma
     
 
@@ -46,16 +38,11 @@ class ConditionalAffineLayer(nn.Module):
     def __init__(self, condition_dim):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(condition_dim, 256),
-            nn.Tanh(),
-            nn.LayerNorm(256),
-            nn.Linear(256, 256),
-            nn.Tanh(),
-            nn.LayerNorm(256),
-            nn.Linear(256, 64),
-            nn.Tanh(),
-            nn.LayerNorm(64),
-            nn.Linear(64, 2)    
+            nn.Linear(condition_dim, 32),
+            nn.ReLU(),
+            nn.Linear(32, 16),
+            nn.ReLU(),
+            nn.Linear(16, 2)    
         )
     
     def forward(self, a, condition):
@@ -128,7 +115,7 @@ class ConditionalNormalizingFlow(nn.Module):
         base_dist = torch.distributions.Normal(base_mean, base_std)
         z = base_dist.rsample()  # reparameterized sample; shape: (num_samples, latent_dim)
         a, _ = self.inverse(z, condition)
-        return a
+        return a, base_mean
     
 
 
@@ -199,7 +186,7 @@ def train(args:dict,file_name:str):
     val_loader = DataLoader(val_dataset, batch_size=train_loader.batch_size, shuffle=False)
 
     model = ConditionalNormalizingFlow(condition_dim=input_dim, n_flows=args.n_flows, latent_dim=args.act_dim, action_lim=action_high)
-    optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)#, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
                                                      factor=0.5, patience=5,)
     expert_model_path = os.path.join(args.data_dir, f'{args.model_type}',f'{args.input_type}_{args.cycle}.pth')
