@@ -315,7 +315,7 @@ def test_model(model, raw_states: np.ndarray, raw_actions: np.ndarray, args):
     
     plt.tight_layout()
     plt.savefig(f'{args.output_dir}/{args.model_type}/{args.input_type}_fit_cycle_{args.cycle}.svg')
-    plt.show()
-    # plt.close()
+    # plt.show()
+    plt.close()
 
     return nll, mse
