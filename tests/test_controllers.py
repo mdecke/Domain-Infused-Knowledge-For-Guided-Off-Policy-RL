@@ -187,31 +187,46 @@ if __name__ == '__main__':
             traj_mle    = {"states": np.array(states_m), "actions": np.array(acts_m)}
             traj_cnf    = {"states": np.array(states_c), "actions": np.array(acts_c)}
 
-    # ---------------------------------------------------------------------------
-    # ❹  Plot the chosen episode
-    # ---------------------------------------------------------------------------
+   
     s1_exprt, s2_exprt = zip(*(theta_theta_dot(s) for s in traj_expert["states"]))
     s1_mle, s2_mle = zip(*(theta_theta_dot(s) for s in traj_mle["states"]))
     s1_cnf, s2_cnf = zip(*(theta_theta_dot(s) for s in traj_cnf["states"]))
 
     plt.figure(figsize=(10,8))
     plt.subplot(3,1,1)
-    plt.plot(s1_exprt, label="Expert"); plt.plot(s1_mle,"--",label="MLE"); plt.plot(s1_cnf,":",label="CNF")
-    plt.ylabel("θ [rad]"); plt.legend(); plt.grid()
+    plt.plot(s1_exprt, label="Expert", color='blue',alpha=0.5) 
+    plt.plot(s1_mle,"--",label="MLE", color='red')
+    plt.plot(s1_cnf,":",label="CNF", color='green')
+    plt.ylabel("θ [rad]")
+    plt.legend()
+    plt.grid()
+    ax = plt.gca()  # Get the current axes
+    ax.set_facecolor('0.95')
 
     plt.subplot(3,1,2)
-    plt.plot(s2_exprt); plt.plot(s2_mle,"--"); plt.plot(s2_cnf,":")
-    plt.ylabel("dθ/dt"); plt.grid()
+    plt.plot(s2_exprt, color='blue',alpha=0.5)
+    plt.plot(s2_mle,"--", color='red') 
+    plt.plot(s2_cnf,":", color='green')
+    plt.ylabel("dθ/dt")
+    plt.grid()
+    ax = plt.gca()  # Get the current axes
+    ax.set_facecolor('0.95')
 
     plt.subplot(3,1,3)
-    plt.plot(traj_expert["actions"]); plt.plot(traj_mle["actions"],"--"); plt.plot(traj_cnf["actions"],":")
-    plt.ylabel("Torque"); plt.xlabel("timestep"); plt.grid()
+    plt.plot(traj_expert["actions"], color='blue',alpha=0.5)
+    plt.plot(traj_mle["actions"],"--",color='red')
+    plt.plot(traj_cnf["actions"],":", color='green')
+    plt.ylabel("Torque")
+    plt.xlabel("timestep")
+    plt.grid()
+    ax = plt.gca()  # Get the current axes
+    ax.set_facecolor('0.95')
 
-    plt.tight_layout(); plt.savefig(f"outputs/pendulum/{INPUT_TYPE}_rollout_comp.svg"); plt.show()
+    plt.tight_layout()
+    plt.savefig(f"outputs/pendulum/{INPUT_TYPE}_rollout_comp.svg")
+    plt.show()
 
-    # ---------------------------------------------------------------------------
-    # ❺  Report returns
-    # ---------------------------------------------------------------------------
+  
     print(f"Expert  avg return: {np.mean(ret_expert):.2f} ± {np.std(ret_expert):.2f}")
     print(f"MLE     avg return: {np.mean(ret_mle):.2f} ± {np.std(ret_mle):.2f}")
     print(f"CNF     avg return: {np.mean(ret_cnf):.2f} ± {np.std(ret_cnf):.2f}")
