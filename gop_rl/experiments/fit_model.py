@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--data_dir", type=str, default="data/pendulum", help="Directory to save expert data.")
     parser.add_argument("--output_dir", type=str, default="outputs/pendulum", help="Directory to save plots.")
     parser.add_argument("--standardize", type=bool, default=False, help="Z-score standardization of model inputs.")
-    parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
     parser.add_argument("--device", type=str, default="cpu", help="Device to use for training.")
     args = parser.parse_args()
 
@@ -42,7 +42,7 @@ def main():
     else: raise ValueError("Invalid environment name. Must be 'Pendulum-v1', 'Ant-v4' or 'Walker2d-v4'")
     
     all_records = []
-    all_metrics = []
+    all_metrics = [] 
     
     for i in range(args.n_cycles):
         args.seed = seeds[i]
@@ -66,7 +66,7 @@ def main():
                 'test_nll'   : test_nll,
                 'test_mse'   : test_mse,
             })
-            print(f'[INFO] Cycle {i+1} records: {all_records[-1]}')
+            print(f"Test set  →  NLL={test_nll:.4f}, MSE={test_mse:.4f}")
         elif args.model_type == 'cnf':
             print('[INFO] Training CNF model...')
             model, train_losses, val_losses, X_test, y_test = cnf.train(args,csv_file_name)
