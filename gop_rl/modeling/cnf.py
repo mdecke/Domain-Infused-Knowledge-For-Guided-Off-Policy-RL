@@ -12,111 +12,143 @@ import matplotlib.pyplot as plt
 from gop_rl.utils import data_processor, prepare_data
 from gop_rl.modeling import EarlyStopping
 
+from nflows.transforms import MaskedPiecewiseRationalQuadraticAutoregressiveTransform
+
 class ConditionalBase(nn.Module):
     def __init__(self, condition_dim, latent_dim, action_lim=1.0):
         super().__init__()
-        if type(action_lim) is not torch.Tensor:
+        if not isinstance(action_lim, torch.Tensor):
             action_lim = torch.tensor(action_lim, dtype=torch.float32)
         self.action_lim = action_lim
         
-        self.fc = nn.Sequential(nn.Linear(condition_dim, 32),
-                                nn.ReLU(),
-                                nn.Linear(32, 16),
-                                # nn.LayerNorm(64),
-                                nn.ReLU())
-        self.mu_head = nn.Linear(16, latent_dim)
-        self.log_sigma_head = nn.Linear(16, latent_dim)
-    
+        self.fc = nn.Sequential(
+            nn.Linear(condition_dim, 256),
+            nn.LayerNorm(256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
+            nn.ReLU(),
+        )
+        self.mu_head = nn.Linear(128, latent_dim)
+        self.log_sigma_head = nn.Linear(128, latent_dim)
+
     def forward(self, condition):
-        logits = self.fc(condition)
-        mu = self.mu_head(logits)
-        log_sigma = self.log_sigma_head(logits)
+        h = self.fc(condition)
+        mu = self.mu_head(h)
+        log_sigma = self.log_sigma_head(h)
         return mu, log_sigma
-    
 
 class ConditionalAffineLayer(nn.Module):
-    def __init__(self, condition_dim):
+    def __init__(self, condition_dim, latent_dim):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(condition_dim, 32),
+        self.latent_dim = latent_dim
+        
+        self.param_net = nn.Sequential(
+            nn.Linear(condition_dim, 256),
+            nn.LayerNorm(256),
             nn.ReLU(),
-            nn.Linear(32, 16),
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
             nn.ReLU(),
-            nn.Linear(16, 2)    
+            nn.Linear(128, latent_dim * 2),
         )
-    
+
     def forward(self, a, condition):
-        params = self.net(condition)  
-        s = params[:, 0:1]            # log-scale parameter
-        t = params[:, 1:2]            # translation
-        scale = torch.exp(s)          # ensure scale is positive
-        # Forward transform: a -> latent z.
-        z = (a - t) / scale
-        log_det = -torch.log(scale).squeeze(1)
-        return z, log_det
-    
-    def inverse(self, z, condition):
-        params = self.net(condition)
-        s = params[:, 0:1]
-        t = params[:, 1:2]
+        batch, dim = a.shape
+        params = self.param_net(condition).view(batch, dim, 2)
+        s = params[..., 0]
+        t = params[..., 1]
         scale = torch.exp(s)
-        # Inverse transform: latent z -> a.
+        z = (a - t) / scale
+        log_det = -torch.log(scale).sum(-1)
+        return z, log_det
+
+    def inverse(self, z, condition):
+        batch, dim = z.shape
+        params = self.param_net(condition).view(batch, dim, 2)
+        s = params[..., 0]
+        t = params[..., 1]
+        scale = torch.exp(s)
         a = scale * z + t
-        log_det = torch.log(scale).squeeze(1)
+        log_det = torch.log(scale).sum(-1)
         return a, log_det
-    
-class ConditionalNormalizingFlow(nn.Module):
-    def __init__(self, condition_dim, n_flows, latent_dim=1, action_lim=1.0):
+
+class ConditionalSplineLayer(nn.Module):
+    def __init__(self, condition_dim, latent_dim,
+                 hidden_dim=256, num_bins=8, tail_bound=3.0):
         super().__init__()
-        self.n_flows = n_flows
-        self.layers = nn.ModuleList([ConditionalAffineLayer(condition_dim) for _ in range(n_flows)])
-        self.conditional_base = ConditionalBase(condition_dim, latent_dim, action_lim)
-    
+        
+        self.transform = MaskedPiecewiseRationalQuadraticAutoregressiveTransform(
+            features=latent_dim,
+            hidden_features=hidden_dim,
+            num_bins=num_bins,
+            tails="linear",
+            tail_bound=tail_bound,
+            context_features=condition_dim,
+        )
+
     def forward(self, a, condition):
-        # Map action a to latent variable z.
+        z, log_det = self.transform(a, context=condition)
+       
+        return z, log_det.sum(-1) if log_det.dim() > 1 else log_det
+
+    def inverse(self, z, condition):
+        a, log_det = self.transform.inverse(z, context=condition)
+        return a, log_det.sum(-1) if log_det.dim() > 1 else log_det
+
+class ConditionalNormalizingFlow(nn.Module):
+    def __init__(self,
+                 condition_dim,
+                 latent_dim,
+                 n_flows,
+                 action_lim=1.0,
+                 affine_first=True,
+                 spline_bins=8,
+                 spline_bound=3.0,
+                 hidden_dim=256):
+        super().__init__()
+        self.layers = nn.ModuleList()
+        # Build alternating affine & spline blocks
+        for _ in range(n_flows):
+            self.layers.append(ConditionalAffineLayer(condition_dim, latent_dim))
+            self.layers.append(ConditionalSplineLayer(condition_dim, latent_dim,
+                                                    hidden_dim=hidden_dim,
+                                                    num_bins=spline_bins,
+                                                    tail_bound=spline_bound))
+        self.conditional_base = ConditionalBase(condition_dim, latent_dim, action_lim)
+
+    def forward(self, a, condition):
         log_det_total = 0.0
         z = a
         for layer in self.layers:
-            z, log_det = layer(z, condition)
-            log_det_total += log_det
+            z, ld = layer(z, condition)
+            log_det_total += ld
         return z, log_det_total
-    
+
     def inverse(self, z, condition):
-        
         log_det_total = 0.0
         a = z
         for layer in reversed(self.layers):
-            a, log_det = layer.inverse(a, condition)
-            log_det_total += log_det
+            a, ld = layer.inverse(a, condition)
+            log_det_total += ld
         return a, log_det_total
-    
+
     def log_prob(self, a, condition):
         z, log_det = self.forward(a, condition)
-        
-        base_mean, base_log_std = self.conditional_base(condition)
-        base_std = torch.exp(base_log_std)
-        base_dist = torch.distributions.Normal(base_mean, base_std)
-        
-        log_base = base_dist.log_prob(z)
-        if len(log_base.shape) > 1:
-            log_base = log_base.sum(1)  # Sum across all dimensions except batch dim
-        
-        # Make sure log_det has the same shape
-        if len(log_det.shape) != len(log_base.shape):
-            # Reshape log_det to match log_base
-            log_det = log_det.view(log_base.shape)
-            
+        mu, log_sigma = self.conditional_base(condition)
+        std = torch.exp(log_sigma)
+        base = torch.distributions.Normal(mu, std)
+        log_base = base.log_prob(z).sum(-1)
         return log_base + log_det
-    
+
     def sample(self, condition):
-        # Sample latent variable from the conditional base.
-        base_mean, base_log_std = self.conditional_base(condition)
-        base_std = torch.exp(base_log_std)
-        base_dist = torch.distributions.Normal(base_mean, base_std)
-        z = base_dist.rsample()  # reparameterized sample; shape: (num_samples, latent_dim)
+        mu, log_sigma = self.conditional_base(condition)
+        std = torch.exp(log_sigma)
+        base = torch.distributions.Normal(mu, std)
+        z = base.rsample()
         a, _ = self.inverse(z, condition)
-        return a, base_mean
-    
+        return a, mu
+
 
 
 def train(args:dict,file_name:str):
@@ -192,14 +224,16 @@ def train(args:dict,file_name:str):
     expert_model_path = os.path.join(args.data_dir, f'{args.model_type}',f'{args.input_type}_{args.cycle}.pth')
     early_stopping = EarlyStopping(patience=args.early_stopping,min_delta=0.0, path=expert_model_path)
 
-    best_eval = float('inf')
     train_nll, val_nll = [], []
     train_mse, val_mse = [], []
-    
+    print('train starts')
     for epoch in range(args.epochs):
         model.train()
         tot_nll, tot_mse = 0.0, 0.0 
+        count = 0
         for input_batch, actions_batch in train_loader:
+            count+=1
+            # print('in batx: ',count)
             input_batch = input_batch.to(args.device)
             actions_batch = actions_batch.to(args.device)
             # print('nb uodates til nan')
@@ -236,8 +270,8 @@ def train(args:dict,file_name:str):
         val_nll.append(avg_val_loss)
         val_mse.append(tot_mse/len(val_loader.dataset))
         
-        if (epoch + 1) % 10 == 0:
-            print(f"Epoch {epoch+1}/{args.epochs}, Train Loss: {train_nll[-1]:.4f} || Val Loss: {avg_val_loss:.4f} || train_mse={train_mse[-1]:.4f} || val_mse={val_mse[-1]:.4f}")
+        # if (epoch + 1) % 10 == 0:
+        print(f"Epoch {epoch+1}/{args.epochs}, Train Loss: {train_nll[-1]:.4f} || Val Loss: {avg_val_loss:.4f} || train_mse={train_mse[-1]:.4f} || val_mse={val_mse[-1]:.4f}")
         
         scheduler.step(avg_val_loss)
         early_stopping(avg_val_loss, model)
@@ -245,7 +279,8 @@ def train(args:dict,file_name:str):
             print("Early stopping triggered at epoch", epoch)
             break
         model.train()
-
+    
+    model.load_state_dict(torch.load(expert_model_path, weights_only=True))
     return model, (train_nll, train_mse), (val_nll, val_mse), X_test, y_test
 
 def plot_metrics(train_losses, val_losses, args):
