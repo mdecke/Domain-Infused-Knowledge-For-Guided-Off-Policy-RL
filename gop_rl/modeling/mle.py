@@ -26,25 +26,25 @@ class ActionMLE(nn.Module):
         self.action_lim = action_lim
         
         self.fc = nn.Sequential(nn.Linear(state_dim, 256),
-                                nn.BatchNorm1d(256),
-                                nn.SiLU(),
+                                nn.LayerNorm(256),
+                                nn.ReLU(),
                                 nn.Dropout(0.15),
 
                                 nn.Linear(256, 256),
-                                nn.BatchNorm1d(256),
-                                nn.SiLU(),
+                                # nn.LayerNorm(256),
+                                nn.ReLU(),
                                 nn.Dropout(0.15),
 
                                 nn.Linear(256, 64),
-                                nn.BatchNorm1d(64),
-                                nn.SiLU())
+                                #nn.LayerNorm(64),
+                                nn.ReLU())
         self.mu_head = nn.Linear(64, action_dim)
         self.log_sigma_head = nn.Linear(64, action_dim)  
 
     def forward(self, state):
         x = self.fc(state)
-        mu = self.action_lim*torch.tanh(self.mu_head(x))
-        log_sigma = torch.clamp(self.log_sigma_head(x), min=-5.0, max=2.0) #clamps sigma to be in [0.01, 7.0]
+        mu = torch.clamp(self.mu_head(x), min=-self.action_lim, max=self.action_lim)#self.action_lim*torch.tanh(self.mu_head(x))
+        log_sigma = torch.clamp(self.log_sigma_head(x), min=-10.0, max=2.0) #clamps sigma to be in [0.01, 7.0]
         return mu, log_sigma
     
     def sample(self, state):
@@ -52,14 +52,14 @@ class ActionMLE(nn.Module):
         sigma = torch.exp(log_sigma) + 1e-9  # Ensure sigma is positive
         dist = torch.distributions.Normal(mu, sigma)
         action = dist.sample()
-        return action, mu, log_sigma
+        return action, mu, sigma
 
 
 def gaussian_reg_nll_loss(mu:torch.Tensor, log_std:torch.Tensor, target:torch.Tensor):
     inv_var = torch.exp(-2.0 * log_std)
     squared_diff = (target - mu) ** 2
     nll = log_std + 0.5 * squared_diff * inv_var + _LOG_2PI_HALF
-    return nll.mean() + (1e-4 * inv_var.mean())  
+    return nll.mean() #+ (1e-4 * inv_var.mean())  
 
 
 
@@ -70,7 +70,7 @@ def train(args,csv_file_path:str):
     args.act_dim = dummy_env.action_space.shape[0]
     action_high = dummy_env.action_space.high[0]
     dummy_env.close()
-
+    
     if args.env_name == 'Pendulum-v1':
         args.obs_dim = 2
 
@@ -111,7 +111,7 @@ def train(args,csv_file_path:str):
     
     model = ActionMLE(input_dim, args.act_dim, action_lim=action_high)
     
-    optimizer = optim.Adam(model.parameters(), lr=1e-2, weight_decay=1e-4)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3,weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
                                                      factor=0.5, patience=5,)
     expert_model_path = os.path.join(args.data_dir, f'{args.model_type}',f'{args.input_type}_{args.cycle}.pth')
@@ -255,6 +255,7 @@ def plot_metrics(history,args):
 
 def test_model(model, raw_states: np.ndarray, raw_actions: np.ndarray, args):
     model.eval()
+
     if args.input_type == 'state':
         states_std = (raw_states - args.state_mean) / args.state_std
     elif args.input_type == 'state_action':
@@ -275,22 +276,21 @@ def test_model(model, raw_states: np.ndarray, raw_actions: np.ndarray, args):
     
     with torch.no_grad():
         model_input = torch.from_numpy(states_std).float().to(args.device)
-        sampled_action, mean_action, log_s = model.sample(model_input)
+        _, mean_action, log_s = model.sample(model_input)
         raw_actions_tensor = torch.from_numpy(raw_actions).float().to(args.device)
 
         nll = gaussian_reg_nll_loss(mean_action,log_s,raw_actions_tensor).item()
         mse = nn.MSELoss()(mean_action, raw_actions_tensor.view(-1, 1) if args.act_dim == 1 else raw_actions_tensor).item()
     
     mean_action = mean_action.cpu().numpy()
-    sampled_action = sampled_action.cpu().numpy()
     log_s = log_s.cpu().numpy()
 
     if args.env_name == 'Pendulum-v1':
         fig = plt.figure(figsize=(10,10))
         ax = fig.add_subplot(111, projection='3d')
-        ax.scatter(raw_states[:5000,0],raw_states[:5000,1], raw_actions.flatten()[:5000],
+        ax.scatter(raw_states[:10000,0],raw_states[:10000,1], raw_actions.flatten()[:10000],
                 color='blue', marker='o', label='True Actions', alpha=0.4)
-        ax.scatter(raw_states[:5000,0], raw_states[:5000,1], mean_action.flatten()[:5000],
+        ax.scatter(raw_states[:10000,0], raw_states[:10000,1], mean_action.flatten()[:10000],
                 color='red',  marker='x', label='Predicted Mean Actions', alpha=0.6)
         ax.set_xlabel('State dim 0 (raw)')
         ax.set_ylabel('State dim 1 (raw)')
@@ -315,6 +315,7 @@ def test_model(model, raw_states: np.ndarray, raw_actions: np.ndarray, args):
     
     plt.tight_layout()
     plt.savefig(f'{args.output_dir}/{args.model_type}/{args.input_type}_fit_cycle_{args.cycle}.svg')
-    plt.close()
+    plt.show()
+    # plt.close()
 
     return nll, mse
