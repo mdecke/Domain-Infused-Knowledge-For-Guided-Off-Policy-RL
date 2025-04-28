@@ -52,7 +52,7 @@ class ActionMLE(nn.Module):
         sigma = torch.exp(log_sigma) + 1e-9  # Ensure sigma is positive
         dist = torch.distributions.Normal(mu, sigma)
         action = dist.sample()
-        return action, mu, sigma
+        return action#, mu #, sigma
 
 
 def gaussian_reg_nll_loss(mu:torch.Tensor, log_std:torch.Tensor, target:torch.Tensor):
