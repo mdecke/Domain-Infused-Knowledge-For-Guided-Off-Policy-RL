@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import ast
 from typing import Union
+import gym
 
 def set_seeds(seed:int, nb_training_cycles:int = 1):
     np.random.seed(seed)
@@ -111,3 +112,47 @@ def data_processor(data:Union[str, pd.DataFrame], args:dict, test:bool=False):
     
     augmented_data = augment_data(df)
     return augmented_data, state_mean, state_std, actions_mean, actions_std
+
+
+
+
+class SparseRewardWrapper(gym.Wrapper):
+    
+    def __init__(self, env: gym.Env, threshold: float = 0.0):
+        super().__init__(env)
+        self.threshold = threshold
+
+    def step(self, action):
+        obs, r_dense, done, info = None, None, None, None
+        # Gymnasium API:
+        if hasattr(self.env, "step"):
+            obs, r_dense, terminated, truncated, info = self.env.step(action)
+            done = terminated or truncated
+        else:
+            obs, r_dense, done, info = self.env.step(action)
+
+        # apply sparsification
+        r_sparse = 1.0 if r_dense >= self.threshold else 0.0
+
+        # repackage
+        if hasattr(self.env, "step") and terminated is not None:
+            return obs, r_sparse, terminated, truncated, info
+        else:
+            return obs, r_sparse, done, info
+
+
+class ParamOverrideWrapper(gym.Wrapper):
+    """
+    Wraps any Gym env and, at construction time, sets
+    any attributes on `env.unwrapped` given by kwargs.
+    E.g. ParamOverrideWrapper(env, m=2.0, l=0.5) will do
+         env.unwrapped.m = 2.0; env.unwrapped.l = 0.5
+    """
+    def __init__(self, env: gym.Env, **overrides):
+        super().__init__(env)
+        base = env.unwrapped
+        for key, val in overrides.items():
+            if hasattr(base, key):
+                setattr(base, key, val)
+            else:
+                raise AttributeError(f"{env.spec.id!r} has no attribute {key}")
