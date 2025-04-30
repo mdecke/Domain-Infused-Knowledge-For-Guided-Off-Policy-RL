@@ -50,11 +50,11 @@ def main():
         print(f'[INFO] Cycle {i+1}/{args.n_cycles}')
         if args.model_type == 'mle':
             print('[INFO] Training MLE model...')
-            model,history, test_inputs_np, test_labels_np= mle.train(args,csv_file_name)
+            model,history, processed_test_data, test_episodes= mle.train(args,csv_file_name)
             print([f'[INFO] Model saved to {args.output_dir}/{args.model_type}/{args.input_type}_model_cycle{i+1}.pt'])
             mle.plot_metrics(history, args)
             print(f'[INFO] Test metrics saved to {args.output_dir}/{args.model_type}/{args.input_type}_model_cycle{i+1}.pt')
-            test_nll, test_mse = mle.test_model(model,raw_states=test_inputs_np, raw_actions=test_labels_np,args=args)
+            test_nll, test_mse = mle.test_model(model,test_episodes,processed_test_data,args=args)
             print(f'[INFO] Test NLL: {test_nll:.4f}, Test MSE: {test_mse:.4f}')
             all_records.append({
                 'model'      : args.model_type,
