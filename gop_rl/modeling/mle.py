@@ -188,6 +188,7 @@ def train(args,csv_file_path:str):
         "val_mse"  : None,
     }
 
+    print('train starts')
     for epoch in range(1, args.epochs + 1):
         model.train()
         train_nlls, train_mses = [], []
@@ -223,9 +224,9 @@ def train(args,csv_file_path:str):
         mean_val_nll = float(np.mean(val_nlls))
         mean_val_mse = float(np.mean(val_mses))
 
-        # print(f"→ Epoch {epoch}/{args.epochs}  "
-        #         f"Train NLL: {mean_train_nll:.4f}  Train MSE: {mean_train_mse:.4f}  "
-        #         f"Val NLL: {mean_val_nll:.4f}    Val MSE: {mean_val_mse:.4f}")
+        print(f"→ Epoch {epoch}/{args.epochs}  "
+                f"Train NLL: {mean_train_nll:.4f}  Train MSE: {mean_train_mse:.4f}  "
+                f"Val NLL: {mean_val_nll:.4f}    Val MSE: {mean_val_mse:.4f}")
 
         history['train_nll'].append(mean_train_nll)
         history['train_mse'].append(mean_train_mse)

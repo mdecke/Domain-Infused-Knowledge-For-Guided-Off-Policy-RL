@@ -13,7 +13,7 @@ from gop_rl.utils import data_processor, prepare_data
 from gop_rl.modeling import EarlyStopping
 
 
-from nflows.transforms import MaskedPiecewiseRationalQuadraticAutoregressiveTransform
+# from nflows.transforms import MaskedPiecewiseRationalQuadraticAutoregressiveTransform
 # from nflows.transforms.nonlinearities import Tanh
 
 
@@ -279,14 +279,15 @@ class ConditionalNormalizingFlow(nn.Module):
             
         return log_base + log_det
     
-    def sample(self, num_samples, condition):
+    def sample(self, condition):
         # Sample latent variable from the conditional base.
         base_mean, base_log_std = self.conditional_base(condition)
         base_std = torch.exp(base_log_std)
         base_dist = torch.distributions.Normal(base_mean, base_std)
         z = base_dist.rsample()  # reparameterized sample; shape: (num_samples, latent_dim)
         a, _ = self.inverse(z, condition)
-        return a
+        mean_act, _= self.inverse(base_mean, condition)
+        return a, mean_act
 
 
 def train(args:dict,file_name:str):

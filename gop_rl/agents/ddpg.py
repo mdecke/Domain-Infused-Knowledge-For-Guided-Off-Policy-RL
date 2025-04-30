@@ -46,8 +46,8 @@ class Policy(nn.Module):
         self.state_dim = state_dim
         self.action_dim = action_dim
     
-        self.fc1 = nn.Sequential(nn.Linear(state_dim, 400), nn.LayerNorm(400))
-        self.fc2 = nn.Sequential(nn.Linear(400, 300), nn.LayerNorm(300))
+        self.fc1 = nn.Sequential(nn.Linear(state_dim, 400))#, nn.LayerNorm(400))
+        self.fc2 = nn.Sequential(nn.Linear(400, 300))#, nn.LayerNorm(300))
         self.action_layer = nn.Linear(300, self.action_dim)
 
         self.optimizer = optim.Adam(self.parameters(), policy_lr)
@@ -67,8 +67,8 @@ class Value(nn.Module):
         self.state_dim = state_dim
         self.action_dim = action_dim
 
-        self.fc1 = nn.Sequential(nn.Linear(state_dim+action_dim, 400), nn.LayerNorm(400))
-        self.fc2 = nn.Sequential(nn.Linear(400, 300), nn.LayerNorm(300))
+        self.fc1 = nn.Sequential(nn.Linear(state_dim+action_dim, 400))#nn.LayerNorm(400))
+        self.fc2 = nn.Sequential(nn.Linear(400, 300))#, nn.LayerNorm(300))
         self.fc3 = nn.Linear(300, 1)
 
         self.optimizer = optim.Adam(self.parameters(), value_lr)

@@ -9,7 +9,7 @@ from gymnasium.vector import SyncVectorEnv
 
 
 from gop_rl.utils import set_seeds
-from gop_rl.utils.io import chose_exploration, handle_input
+from gop_rl.utils.io import chose_exploration, handle_input, insertion_scheme
 from gop_rl.agents import ddpg as agent
 
 import time
@@ -61,7 +61,7 @@ def main():
     parser.add_argument('--env_name', type=str, default='Pendulum-v1', help='Environment name')
     parser.add_argument('--agent', type=str, default='ddpg', help='Agent name')
     parser.add_argument('--exploration_type', type=str, default='gaussian', help='Exploration type')
-    parser.add_argument('--seed', type=int, default=0, help='Random seed')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed')
     parser.add_argument('--n_cycles', type=int, default=5, help='Number of training cycles')
     parser.add_argument('--training_steps', type=int, default=15000, help='Number of training time steps')
     parser.add_argument('--max_episode_length', type=int, default=200, help='Max steps per episode')
@@ -78,7 +78,8 @@ def main():
     parser.add_argument('--output_dir', type=str, default='outputs/pendulum', help='Directory to save models')
     parser.add_argument('--scale', type=int, choices=[0, 1], default=0, help='Enable running standard scaler (0=disabled, 1=enabled)')
     parser.add_argument('--input_type', type=str, default='state', help='Input history to expert model')
-    parser.add_argument('--n_flows', type=int, default=10, help='Number of flows in CNF')
+    parser.add_argument('--n_flows', type=int, default=2, help='Number of flows in CNF')
+    parser.add_argument('--insertion_scheme', type=str, default='bias', help='How expert is used')
     args = parser.parse_args()
 
     os.makedirs(args.data_dir, exist_ok=True)
@@ -92,12 +93,13 @@ def main():
     args.state_dim  = dummy.observation_space.shape[0]
     args.action_dim = dummy.action_space.shape[0]
     args.action_low = dummy.action_space.low
-    args.action_high= dummy.action_space.high
+    args.action_high= torch.tensor(dummy.action_space.high, dtype=torch.float32, device=args.device)
     dummy.close()
 
     
 
     explorator, noise = chose_exploration(args)
+    
     print(f"[INFO] Exploration type: {args.exploration_type}")
 
     seeds = set_seeds(args.seed, 2*args.n_cycles)
@@ -107,7 +109,7 @@ def main():
     loss_records   = []
     return_records = []
     eval_records   = []
-    BEST_SO_FAR    = -np.inf
+    
 
     for cycle_idx in range(args.n_cycles):
         print(f"[INFO] Cycle {cycle_idx+1}/{args.n_cycles}")
@@ -139,6 +141,8 @@ def main():
         prev_action = np.zeros((args.num_envs, args.action_dim))
         prev_obs = np.zeros_like(obs)
 
+        R = -1e-9
+        BEST_SO_FAR = -np.inf
         progress_bar = tqdm(range(args.training_steps),desc=f"Cycle {cycle_idx+1}/{args.n_cycles}",unit="step")
 
         for t in progress_bar:
@@ -151,16 +155,16 @@ def main():
                     action = behavior_policy(state)
                     # print(action.shape)
                     if noise:
-                        exploration_action = explorator.sample(action.shape).to(device)
+                        exploration_action = explorator.sample(action.shape).to(device=args.device)
                         raw_action = action + exploration_action
                     else:
                         explorator_input = handle_input(obs,prev_obs, prev_action, args)
-                        exploration_action = explorator.sample(explorator_input).to(device)
-                        # print(exploration_action.shape)
-                        quit()
-                        # raw_action = insert_scheme(action, exploration_action, args)
+                        exploration_action = explorator.sample(explorator_input)
+                        raw_action = insertion_scheme(action, exploration_action, R, args)
+                        
                     
-                clipped_action = np.clip(raw_action.cpu().numpy(),a_min=args.action_low,a_max=args.action_high)
+                clipped_action_t = torch.clamp(raw_action,min=-args.action_high,max=args.action_high)
+                clipped_action = clipped_action_t.cpu().numpy()
             
             # step envs
             next_obs, rewards, terminated, truncated, _ = train_envs.step(clipped_action)
@@ -184,14 +188,16 @@ def main():
                                      'policy_loss': rl_agent.pi_loss[-1],
                                      'q_loss': rl_agent.q_loss[-1]})
             
+            total_steps = t*args.num_envs
+            
             if t > 0 and t % args.eval_freq == 0:
-                avg_r= evaluate_policy(env_name=args.env_name, policy=rl_agent.pi, args=args, seed=int(test_seeds[cycle_idx]))
-                total_steps = t*args.num_envs
+                avg_r = evaluate_policy(env_name=args.env_name, policy=rl_agent.pi, args=args, seed=int(test_seeds[cycle_idx]))
                 eval_records.append({'cycle': cycle_idx+1,
                                      'step': t,
-                                     'avg_return': avg_r})
+                                     'avg_return': avg_r,
+                                     'total steps': total_steps})
                 
-                print(f"[EVAL] cycle {cycle_idx+1}, step {t} → avg_return {avg_r:.2f}")
+                print(f"[EVAL] cycle {cycle_idx+1}, step {t} → avg_return {R:.2f}")
             
             prev_state = obs.copy()
             prev_action = clipped_action.copy()
@@ -203,10 +209,11 @@ def main():
                         BEST_SO_FAR = cumulative_reward[i]
                         torch.save(
                             behavior_policy.state_dict(),
-                            f"{args.data_dir}/best_{args.agent}_model_{args.exploration_type}.pth"
+                            f"{args.data_dir}/best_{args.agent}_model_{args.exploration_type}_{args.insertion_scheme}.pth"
                         )
                     return_records.append({'cycle': cycle_idx+1, 'env_idx': i,
                                            'episode': episode_counter[i],'return':  cumulative_reward[i]})
+                    R = cumulative_reward[i]
                     cumulative_reward[i] = 0.0
                     reset_obs, _ = train_envs.reset()
                     next_obs[i] = reset_obs[i]
@@ -222,10 +229,15 @@ def main():
     df_loss   = pd.DataFrame(loss_records)
     df_ret    = pd.DataFrame(return_records)
     df_eval   = pd.DataFrame(eval_records)
+    if args.insertion_scheme:
+        df_loss.to_csv(os.path.join(args.data_dir, f"losses_{args.exploration_type}_{args.insertion_scheme}.csv"),     index=False)
+        df_ret .to_csv(os.path.join(args.data_dir, f"returns_{args.exploration_type}_{args.insertion_scheme}.csv"),    index=False)
+        df_eval.to_csv(os.path.join(args.data_dir, f"eval_returns__{args.exploration_type}_{args.insertion_scheme}.csv"), index=False)
+    else:
+        df_loss.to_csv(os.path.join(args.data_dir, f"losses_{args.exploration_type}.csv"),     index=False)
+        df_ret .to_csv(os.path.join(args.data_dir, f"returns_{args.exploration_type}.csv"),    index=False)
+        df_eval.to_csv(os.path.join(args.data_dir, f"eval_returns__{args.exploration_type}.csv"), index=False)
 
-    df_loss.to_csv(os.path.join(args.data_dir, f"losses_{args.exploration_type}.csv"),     index=False)
-    df_ret .to_csv(os.path.join(args.data_dir, f"returns_{args.exploration_type}.csv"),    index=False)
-    df_eval.to_csv(os.path.join(args.data_dir, f"eval_returns__{args.exploration_type}.csv"), index=False)
     print(f"[INFO] Metrics saved to {args.data_dir}")
 
 if __name__ == "__main__":

@@ -180,8 +180,6 @@ cython_debug/
 play*.py
 outputs/*
 
-data/pendulum/*
-data/ant/*.pth
-data/ant/*.csv
+data/*
 
 rollout_comp.py

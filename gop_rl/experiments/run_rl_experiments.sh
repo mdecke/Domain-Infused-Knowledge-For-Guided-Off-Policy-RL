@@ -1,49 +1,125 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -e  # exit on any error
 
-# Run Ant experiment
-echo "Starting Ant experiment..."
-python3 -m gop_rl.experiments.run_rl \
-  --env Ant-v4 \
-  --training_steps 20000 \
-  --max_episode_length 1000 \
-  --n_grad_steps 3 \
-  --batch_size 1024 \
-  --warm_up 40 \
-  --num_envs 100 \
-  --device 'cuda' \
-  --n_cycles 1 \
-  --eval_freq 500 \
-  --data_dir ../../data/ant \
-  --output_dir ../../outputs/ant
+# ——— Common settings ———
+INPUT_TYPE="state"
+N_CYCLES=1
+TRAIN_STEPS=10000
+EVAL_FREQ=1000
+NUM_ENVS=100
+DEVICE="cuda"
 
-# Check if the first experiment completed successfully
-if [ $? -eq 0 ]; then
-  echo "Ant experiment completed successfully."
-else
-  echo "Ant experiment failed with exit code $?."
-fi
+# ——— Pendulum-specific ———
+ENV_PEND="Pendulum-v1"
+MAX_EP_LEN_PEND=200
+WARM_UP_PEND=0
+DATA_DIR_PEND="data/pendulum"
+OUTPUT_DIR_PEND="outputs/pendulum"
 
-# Run Pendulum experiment
-echo "Starting Pendulum experiment..."
-python3 -m gop_rl.experiments.run_rl \
-  --env Pendulum-v1 \
-  --training_steps 20000 \
-  --max_episode_length 200 \
-  --n_grad_steps 3 \
-  --batch_size 1024 \
-  --warm_up 40 \
-  --num_envs 100 \
-  --device 'cuda' \
-  --n_cycles 5 \
-  --eval_freq 2000 \
-  --data_dir ../../data/pendulum \
-  --output_dir ../../outputs/pendulum
+# ——— Ant-specific ———
+ENV_ANT="Ant-v4"
+MAX_EP_LEN_ANT=1000
+WARM_UP_ANT=40
+DATA_DIR_ANT="data/ant"
+OUTPUT_DIR_ANT="outputs/ant"
 
-# Check if the second experiment completed successfully
-if [ $? -eq 0 ]; then
-  echo "Pendulum experiment completed successfully."
-else
-  echo "Pendulum experiment failed with exit code $?."
-fi
+# ——— Sweep over these ———
+SCHEMES=(bias "warm-start" dcc)
+AGENTS=(gaussian mle cnf)   # add 'mle' here if you want to sweep it too
 
-echo "All experiments have finished."
+for AGENT in "${AGENTS[@]}"; do
+
+  if [[ "$AGENT" == "gaussian" ]]; then
+    # one run per env, no insertion‐scheme loop
+    echo "============================================"
+    echo "Agent: $AGENT | Env: Pendulum"
+    echo "============================================"
+    python3 -m gop_rl.experiments.run_rl \
+      --env_name           "$ENV_PEND" \
+      --exploration_type   "$AGENT" \
+      --input_type         "$INPUT_TYPE" \
+      --n_cycles           "$N_CYCLES" \
+      --training_steps     "$TRAIN_STEPS" \
+      --max_episode_length "$MAX_EP_LEN_PEND" \
+      --warm_up            "$WARM_UP_PEND" \
+      --n_grad_steps       1 \
+      --batch_size         1024 \
+      --num_envs           "$NUM_ENVS" \
+      --eval_freq          "$EVAL_FREQ" \
+      --device             "$DEVICE" \
+      --data_dir           "$DATA_DIR_PEND" \
+      --output_dir         "$OUTPUT_DIR_PEND/$AGENT"
+    echo "→ Pendulum [$AGENT] done."
+
+    echo "============================================"
+    echo "Agent: $AGENT | Env: Ant"
+    echo "============================================"
+    python3 -m gop_rl.experiments.run_rl \
+      --env_name           "$ENV_ANT" \
+      --exploration_type   "$AGENT" \
+      --input_type         "$INPUT_TYPE" \
+      --n_cycles           "$N_CYCLES" \
+      --training_steps     "$TRAIN_STEPS" \
+      --max_episode_length "$MAX_EP_LEN_ANT" \
+      --warm_up            "$WARM_UP_ANT" \
+      --n_grad_steps       1 \
+      --batch_size         1024 \
+      --num_envs           "$NUM_ENVS" \
+      --eval_freq          "$EVAL_FREQ" \
+      --device             "$DEVICE" \
+      --data_dir           "$DATA_DIR_ANT" \
+      --output_dir         "$OUTPUT_DIR_ANT/$AGENT"
+    echo "→ Ant      [$AGENT] done."
+
+  else
+    # for cnf (and mle if added), sweep insertion schemes
+    for SCHEME in "${SCHEMES[@]}"; do
+
+      # echo "============================================"
+      # echo "Agent: $AGENT | Scheme: $SCHEME | Env: Pendulum"
+      # echo "============================================"
+      # python3 -m gop_rl.experiments.run_rl \
+      #   --env_name           "$ENV_PEND" \
+      #   --exploration_type   "$AGENT" \
+      #   --input_type         "$INPUT_TYPE" \
+      #   --insertion_scheme   "$SCHEME" \
+      #   --n_cycles           "$N_CYCLES" \
+      #   --training_steps     "$TRAIN_STEPS" \
+      #   --max_episode_length "$MAX_EP_LEN_PEND" \
+      #   --warm_up            "$WARM_UP_PEND" \
+      #   --n_grad_steps       3 \
+      #   --batch_size         1024 \
+      #   --num_envs           "$NUM_ENVS" \
+      #   --eval_freq          "$EVAL_FREQ" \
+      #   --device             "$DEVICE" \
+      #   --data_dir           "$DATA_DIR_PEND" \
+      #   --output_dir         "$OUTPUT_DIR_PEND/$AGENT/$SCHEME"
+      # echo "→ Pendulum [$AGENT / $SCHEME] done."
+
+      echo "============================================"
+      echo "Agent: $AGENT | Scheme: $SCHEME | Env: Ant"
+      echo "============================================"
+      python3 -m gop_rl.experiments.run_rl \
+        --env_name           "$ENV_ANT" \
+        --exploration_type   "$AGENT" \
+        --input_type         "$INPUT_TYPE" \
+        --insertion_scheme   "$SCHEME" \
+        --n_cycles           "$N_CYCLES" \
+        --training_steps     "$TRAIN_STEPS" \
+        --max_episode_length "$MAX_EP_LEN_ANT" \
+        --warm_up            "$WARM_UP_ANT" \
+        --n_grad_steps       3 \
+        --batch_size         1024 \
+        --num_envs           "$NUM_ENVS" \
+        --eval_freq          "$EVAL_FREQ" \
+        --device             "$DEVICE" \
+        --data_dir           "$DATA_DIR_ANT" \
+        --output_dir         "$OUTPUT_DIR_ANT/$AGENT/$SCHEME"
+      echo "→ Ant      [$AGENT / $SCHEME] done."
+
+    done
+  fi
+
+done
+
+echo "All experiments finished successfully."
