@@ -1,9 +1,38 @@
 import torch
+import torch.nn as nn
 from torch.distributions import Normal
 import pandas as pd
 import numpy as np
 from gop_rl.modeling import mle, cnf
 
+class ContinuousActionNN(nn.Module):
+    def __init__(self, state_dim, action_dim):
+        super(ContinuousActionNN, self).__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(state_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 32),
+            nn.ReLU()
+        )
+        self.mu_head = nn.Linear(32, action_dim)
+        self.log_sigma_head = nn.Linear(32, action_dim)    
+        
+    def forward(self, state):
+        x = self.fc(state)
+        mu = self.mu_head(x)
+        log_sigma = self.log_sigma_head(x)
+        return mu, log_sigma    
+        
+    def sample(self, state):
+        mu, log_sigma = self.forward(state)
+        sigma = torch.exp(log_sigma)
+        dist = torch.distributions.Normal(mu, sigma)
+        action = dist.sample()
+        return action#, mu, sigma
 
 
 class OrnsteinUhlenbeckNoise:
@@ -64,12 +93,18 @@ def chose_exploration(args): #handle different size inputs?
             noise = True
         case 'mle':
             print('input dim is: ',input_dim)
-            explorator = mle.ActionMLE(state_dim=input_dim, action_dim=args.action_dim, action_lim=args.action_high).to(args.device)
-            explorator.load_state_dict(torch.load('prev_state_action_3.pth'))
+            # explorator = mle.ActionMLE(state_dim=input_dim, action_dim=args.action_dim, action_lim=args.action_high)
+            explorator = ContinuousActionNN(state_dim=input_dim, action_dim=args.action_dim)
+            explorator.load_state_dict(torch.load(f'{args.data_dir}/mle/ppo_mle.pth'))
+            explorator.to(args.device)
+            explorator.eval()
             noise = False
         case 'cnf':
-            explorator = cnf.ConditionalNormalizingFlow(condition_dim=input_dim, n_flows=args.n_flows, latent_dim=args.action_dim).to(args.device)
-            explorator.load_state_dict(torch.load('state_1.pth'))
+            print('input dim is: ',input_dim)
+            explorator = cnf.ConditionalNormalizingFlow(condition_dim=input_dim, n_flows=args.n_flows, latent_dim=args.action_dim)
+            explorator.load_state_dict(torch.load(f'{args.data_dir}/cnf/{args.input_type}_1.pth'))
+            explorator.to(args.device)
+            explorator.eval()
             noise = False
         case _:
             raise ValueError(f"Unknown exploration type: {args.exploration_type}, must be 'gaussian', 'ou', 'mle' or 'cnf'")
@@ -118,6 +153,31 @@ def handle_input(obs,prev_obs,prev_action,args):
     
     # Convert to tensor and return
     return torch.tensor(x, dtype=torch.float32, device=args.device)
+
+def insertion_scheme(behavior_action:torch.Tensor, expert_action:torch.Tensor,eval_return:float, args:dict):
+    if args.insertion_scheme == "bias":
+        return behavior_action + expert_action
+    elif args.insertion_scheme == "warm-start":
+        return expert_action
+    elif args.insertion_scheme == "dcc":
+        if args.env_name == 'Pendulum-v1':
+            R_max = -132.00
+            R_min = -1500.00
+            R = eval_return
+        elif args.env_name == 'Ant-v4':
+            R = np.abs(eval_return)
+            R_max = 3000.00
+            R_min = 0
+        eta = (R - R_min) / (R_max - R_min)
+        # eta = 6*(R_std**5) - 15*(R_std**4) + 10*(R_std**3)
+        if eta < 0:
+            eta = 0
+        elif eta > 1:
+            dist = Normal(loc=0.0, scale=0.1)
+            return behavior_action + dist.sample(behavior_action.shape).to(device=args.device)
+        return eta*behavior_action + (1-eta) * expert_action
+    else:
+        raise ValueError(f"Unknown incorporation scheme: {args.incorp}, must be 'bias', 'warm-start' or 'dcc'")
 
 
 
