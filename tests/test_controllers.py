@@ -11,7 +11,7 @@ from gop_rl.expert_controllers.elqr import LQRController, EnergyShapingControlle
 
 SEED = 42
 
-INPUT_TYPE = 'state'  # 'state', 'state_action', or 'prev_state_action' or 'state_prev_state'
+INPUT_TYPE = 'state_prev_state'  # 'state', 'state_action', or 'prev_state_action' or 'state_prev_state'
 ANGLE_SWITCH_THRESHOLD_DEG = 18
 device = 'cpu'
 
@@ -31,8 +31,9 @@ if __name__ == '__main__':
     )
     base_env.close()
 
-    NUM_EPISODES     = 50
-    PLOT_EPISODE_IDX = 0
+    NUM_EPISODES     = 1000
+    PLOT_EPISODE_IDX = np.random.randint(0, 100)
+    print('plot episode: ', PLOT_EPISODE_IDX)
 
     
     if INPUT_TYPE == 'state':
@@ -68,7 +69,7 @@ if __name__ == '__main__':
     mle_sampler.eval()
 
     cnf_model = ConditionalNormalizingFlow(condition_dim=input_dim,
-                                           n_flows=6,latent_dim=action_dim,action_lim=action_high)          # ← use your config
+                                           n_flows=6,latent_dim=action_dim)          # ← use your config
     cnf_model.load_state_dict(torch.load(CNF_PATH, map_location=device,
                                         weights_only=True))
     cnf_model.eval()
@@ -76,6 +77,9 @@ if __name__ == '__main__':
     
     ret_expert, ret_mle, ret_cnf = [], [], []
     traj_expert, traj_mle, traj_cnf = {}, {}, {}
+
+    mse_mle_episodes = []
+    mse_cnf_episodes = []
 
     # helper to convert states to (θ, θ̇)
     def theta_theta_dot(state_vec):
@@ -179,6 +183,11 @@ if __name__ == '__main__':
         env_exp.close(); env_mle.close(); env_cnf.close()
         print('deon episode: ', ep)
 
+        mse_mle = np.mean((np.array(acts_m) - np.array(acts_e))**2)
+        mse_cnf = np.mean((np.array(acts_c) - np.array(acts_e))**2)
+        mse_mle_episodes.append(mse_mle)
+        mse_cnf_episodes.append(mse_cnf)
+
         # aggregate
         ret_expert.append(ep_ret_e); ret_mle.append(ep_ret_m); ret_cnf.append(ep_ret_c)
 
@@ -196,7 +205,7 @@ if __name__ == '__main__':
     plt.subplot(3,1,1)
     plt.plot(s1_exprt, label="Expert", color='blue',alpha=0.5) 
     plt.plot(s1_mle,"--",label="MLE", color='red')
-    plt.plot(s1_cnf,":",label="CNF", color='green')
+    plt.plot(s1_cnf,"-.",label="CNF", color='green')
     plt.ylabel("θ [rad]")
     plt.legend()
     plt.grid()
@@ -206,7 +215,7 @@ if __name__ == '__main__':
     plt.subplot(3,1,2)
     plt.plot(s2_exprt, color='blue',alpha=0.5)
     plt.plot(s2_mle,"--", color='red') 
-    plt.plot(s2_cnf,":", color='green')
+    plt.plot(s2_cnf,"-.", color='green')
     plt.ylabel("dθ/dt")
     plt.grid()
     ax = plt.gca()  # Get the current axes
@@ -230,3 +239,5 @@ if __name__ == '__main__':
     print(f"Expert  avg return: {np.mean(ret_expert):.2f} ± {np.std(ret_expert):.2f}")
     print(f"MLE     avg return: {np.mean(ret_mle):.2f} ± {np.std(ret_mle):.2f}")
     print(f"CNF     avg return: {np.mean(ret_cnf):.2f} ± {np.std(ret_cnf):.2f}")
+    print(f"MLE    action MSE: {np.mean(mse_mle_episodes):.4f} ± {np.std(mse_mle_episodes):.4f}")
+    print(f"CNF    action MSE: {np.mean(mse_cnf_episodes):.4f} ± {np.std(mse_cnf_episodes):.4f}")
