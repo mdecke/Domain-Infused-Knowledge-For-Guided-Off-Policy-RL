@@ -470,9 +470,10 @@ def train(args:dict,file_name:str):
             optimizer.step()
             base_mean, _ = model.conditional_base(input_batch)
             actions_pred,_ = model.inverse(base_mean, input_batch)
-            total_train_mse += nn.functional.mse_loss(actions_pred, actions_batch).item()
+            total_train_mse += nn.functional.mse_loss(actions_pred, actions_batch).item() * actions_batch.size(0)
             total_loss += loss.item() * actions_batch.size(0)
         avg_loss = total_loss / len(train_loader.dataset)
+        avg_train_mse = total_train_mse/len(train_loader.dataset)
         train_losses.append(avg_loss)
         
 
@@ -485,10 +486,14 @@ def train(args:dict,file_name:str):
                 log_prob = model.log_prob(actions_batch, input_batch)
                 loss = -log_prob.mean()
                 total_val_loss += loss.item() * actions_batch.size(0)
+                base_mean, _ = model.conditional_base(input_batch)
+                actions_pred,_ = model.inverse(base_mean, input_batch)
+                total_val_mse += nn.functional.mse_loss(actions_pred,actions_batch).item() * actions_batch.size(0)
             val_loss = total_val_loss / len(val_loader.dataset)
-            val_losses.append(loss.item())
-        if (epoch + 1) % 10 == 0:
-            print(f"Epoch {epoch+1}/{args.epochs}, Train Loss: {avg_loss:.4f} || Val Loss: {val_loss:.4f}")
+            avg_val_mse = total_val_mse/len(val_loader.dataset)
+            val_losses.append(val_loss)
+        # if (epoch + 1) % 10 == 0:
+        print(f"Epoch {epoch+1}/{args.epochs}, Train Loss: {avg_loss:.4f} || Val Loss: {val_loss:.4f} || train mse: {avg_train_mse} || val mse: {avg_val_mse}")
 
         
         # if (epoch + 1) % 10 == 0:
